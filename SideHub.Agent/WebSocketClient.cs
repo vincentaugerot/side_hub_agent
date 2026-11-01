@@ -34,6 +34,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
     // Secret each PTY's notification lines must carry (NotifyFifo.SecretVariable), minted at spawn
     private readonly ConcurrentDictionary<string, string> _ptyNotifySecrets = new();
+    // PTYs opened for a task (SIDEHUB_TASK_ID) that has not called `sidehub-cli task done` yet: they hold an update
+    private readonly ConcurrentDictionary<string, byte> _ptyOpenTasks = new();
     private readonly McpSecretsFiles _mcpSecretsFiles;
     // Real-path cwd of each PTY session, needed to locate Claude's project JSONL
     // for the ai-title watcher.
@@ -67,6 +69,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
     /// <summary>Folder of the working directory where terminal image attachments are saved.</summary>
     private const string AttachmentsDirectory = ".sidehub-images";
+    /// <summary>Set by SideHub on a terminal opened for a task (task queue, or a tab opened from the task).</summary>
+    private const string TaskIdVariable = "SIDEHUB_TASK_ID";
 
     // PTY sessions driven by the backend (workflow steps, scheduled prompts, runs) run
     // unattended and often produce no input for long stretches. The backend owns their
@@ -393,6 +397,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         }
         _ptyCwd.TryRemove(ptySessionId, out _);
         _ptyNotifySecrets.TryRemove(ptySessionId, out _);
+        _ptyOpenTasks.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
         _cliStates.Clear(ptySessionId);
         _cliMessages.Clear(ptySessionId);
@@ -523,6 +528,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // Written by `sidehub-cli task done`: the task's review round ends (a run's round ends with its terminal),
                 // and its commit is now waiting to be pushed.
                 case FifoNotification.TaskDone:
+                    _ptyOpenTasks.TryRemove(ptySessionId, out _);
                     RunInBackground("review.changes", async () =>
                     {
                         if (_reviews.HasOpenRound(ptySessionId))
@@ -1462,9 +1468,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     Task<bool> IUpdateClient.SendUpdateStatusAsync(AgentUpdateStatusMessage message, CancellationToken ct) => TrySendAsync(message, ct);
 
     /// <summary>
-    /// What an update would cut here: a run (backend-driven PTY), a CLI turn in progress, a command, a file being
-    /// written, or a terminal used in the last <see cref="TerminalActivityWindow"/>. A terminal left alone longer, or
-    /// a CLI waiting for an answer that long, does not hold the update.
+    /// What an update would cut here: a run (backend-driven PTY), a task whose terminal has not called
+    /// <c>sidehub-cli task done</c> yet (a queued task waits between two turns of its CLI), a CLI turn in progress, a
+    /// command, a file being written, or a terminal used in the last <see cref="TerminalActivityWindow"/>. A terminal
+    /// left alone longer, or a CLI waiting for an answer that long, does not hold the update.
     /// </summary>
     public IReadOnlyList<string> BusyReasons()
     {
@@ -1472,6 +1479,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var live = _ptySessions.Where(s => s.Value.Executor.IsRunning).Select(s => s.Key).ToList();
         if (live.Any(IsBackendManagedPtySession))
             reasons.Add("run");
+        if (live.Any(_ptyOpenTasks.ContainsKey))
+            reasons.Add("queued-task");
         if (live.Any(sid => _cliStates.Current(sid)?.State == CliStates.Working))
             reasons.Add("cli-working");
         if (_executor.IsBusy)
@@ -1985,7 +1994,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             if (checkout is null && Guid.TryParse(message.ReviewId, out var reviewId))
             {
                 var runId = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv);
-                Guid? taskId = Guid.TryParse(message.AdditionalEnv?.GetValueOrDefault("SIDEHUB_TASK_ID"), out var t) ? t : null;
+                Guid? taskId = Guid.TryParse(message.AdditionalEnv?.GetValueOrDefault(TaskIdVariable), out var t) ? t : null;
                 await _reviews.StartRoundAsync(reviewId, ptySessionId, cwd, runId is null ? ReviewKinds.Task : ReviewKinds.Run,
                     runId, taskId, OtherCliWorking(ptySessionId, cwd), WorkReviewTracker.LaunchSnapshotTimeout, ct);
             }
@@ -2036,6 +2045,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 var session = new PtySession(executor, shell, startedAt);
                 _ptySessions[ptySessionId] = session;
                 _ptySecrets[ptySessionId] = (message.AdditionalEnv, message.SecretKeys);
+                if (!string.IsNullOrEmpty(message.AdditionalEnv?.GetValueOrDefault(TaskIdVariable)))
+                    _ptyOpenTasks[ptySessionId] = 0;
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }

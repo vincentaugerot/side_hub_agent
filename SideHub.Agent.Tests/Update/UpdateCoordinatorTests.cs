@@ -13,6 +13,7 @@ public class UpdateCoordinatorTests : IDisposable
     private readonly FakeClient _client = new();
     private readonly List<PendingUpdate> _launched = [];
     private readonly List<AgentInstance> _instances = [];
+    private readonly List<string> _logs = [];
     private readonly string _install;
     private readonly string _project;
     private readonly string _updates;
@@ -30,7 +31,7 @@ public class UpdateCoordinatorTests : IDisposable
 
     private UpdateCoordinator Coordinator(SelfUpdateSupport? support = null)
     {
-        var coordinator = new UpdateCoordinator(_project, _ => { }, support ?? new SelfUpdateSupport(true, null, _install), _updates,
+        var coordinator = new UpdateCoordinator(_project, _logs.Add, support ?? new SelfUpdateSupport(true, null, _install), _updates,
             stage: (install, version, _, _) =>
             {
                 var staging = UpdateStager.StagingDirectory(install, version);
@@ -62,6 +63,7 @@ public class UpdateCoordinatorTests : IDisposable
         Assert.Equal("1.0.91", launched.Version);
         Assert.Equal(UpdateModes.WhenIdle, launched.Mode);
         Assert.True(coordinator.IsApplying);
+        Assert.Contains("Machine idle: launching the updater to 1.0.91", _logs);
     }
 
     [Fact]
@@ -130,14 +132,16 @@ public class UpdateCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public async Task Mode_now_does_not_wait()
+    public async Task Mode_now_does_not_wait_and_says_what_it_cuts()
     {
-        _client.Busy = ["run"];
+        _client.Busy = ["queued-task", "run"];
         using var coordinator = Coordinator();
 
         await coordinator.RequestAsync(_client, "r1", "1.0.91", "v1.0.91", UpdateModes.Now, CancellationToken.None);
 
         Assert.Single(_launched);
+        Assert.Contains("Update forced (machine busy: queued-task, run): launching the updater to 1.0.91", _logs);
+        Assert.DoesNotContain(_logs, line => line.StartsWith("Machine idle", StringComparison.Ordinal));
     }
 
     [Fact]

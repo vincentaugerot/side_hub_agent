@@ -229,17 +229,19 @@ public sealed class UpdateCoordinator : IDisposable
                 return;
             }
 
-            var waitingFor = pending.Mode == UpdateModes.Now ? [] : MachineBusyReasons(pending.InstallDirectory, ownReasons);
-            if (waitingFor.Count == 0)
+            var busy = MachineBusyReasons(pending.InstallDirectory, ownReasons);
+            if (pending.Mode == UpdateModes.Now || busy.Count == 0)
             {
-                await LaunchAsync(pending);
+                // "Now" skips the wait: the log says what it cuts, so a stopped task is not taken for an idle machine
+                await LaunchAsync(pending, busy.Count == 0
+                    ? "Machine idle"
+                    : $"Update forced (machine busy: {string.Join(", ", busy)})");
                 return;
             }
-
             // The daemon that received the request reports what the machine waits for, when it changes
-            var report = string.Join(",", waitingFor);
+            var report = string.Join(",", busy);
             if (pending.RequestedByPid == Environment.ProcessId && report != _lastWaitingReport
-                && await SendAsync(new AgentUpdateStatusMessage { RequestId = pending.RequestId, Version = pending.Version, State = UpdateStates.WaitingIdle, BusyReasons = waitingFor }))
+                && await SendAsync(new AgentUpdateStatusMessage { RequestId = pending.RequestId, Version = pending.Version, State = UpdateStates.WaitingIdle, BusyReasons = busy }))
                 _lastWaitingReport = report;
         }
         finally
@@ -268,7 +270,7 @@ public sealed class UpdateCoordinator : IDisposable
         return reasons.ToList();
     }
 
-    private async Task LaunchAsync(PendingUpdate pending)
+    private async Task LaunchAsync(PendingUpdate pending, string why)
     {
         try
         {
@@ -281,7 +283,7 @@ public sealed class UpdateCoordinator : IDisposable
             return; // another daemon got there first
         }
 
-        _log($"Machine idle: launching the updater to {pending.Version}");
+        _log($"{why}: launching the updater to {pending.Version}");
         await SendAsync(new AgentUpdateStatusMessage { RequestId = pending.RequestId, Version = pending.Version, State = UpdateStates.Applying });
         if (_launchUpdater(pending, _projectDirectory))
             return;
