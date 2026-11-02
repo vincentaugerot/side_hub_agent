@@ -16,7 +16,7 @@ set -e
 #   SIDEHUB_BIN_DIR      where the sidehub-agent and sidehub-cli links go (default /usr/local/bin, ~/.local/bin with --user)
 #
 # The archive is checked against the release's checksums.sha256, downloaded from GitHub Releases
-# (SIDEHUB_GITHUB_REPO, default toregua/side_hub_agent); a missing or mismatching checksum aborts the install.
+# (SIDEHUB_GITHUB_REPO, default vincentaugerot/side_hub_agent); a missing or mismatching checksum aborts the install.
 # checksums.sha256 itself must carry a valid signature (checksums.sha256.sig) from the release key below:
 # write access to the GitHub release alone is not enough to ship a tampered archive.
 
@@ -27,7 +27,7 @@ SIDEHUB_API="${SIDEHUB_API%/api}"
 # Checksums come straight from GitHub Releases, not through the SideHub API that hands out the archive (a redirect
 # to the release asset):
 # a compromised API cannot hand out both a tampered archive and a matching checksum.
-GITHUB_REPO="${SIDEHUB_GITHUB_REPO:-toregua/side_hub_agent}"
+GITHUB_REPO="${SIDEHUB_GITHUB_REPO:-vincentaugerot/side_hub_agent}"
 # Resolved by resolve_install_target: system-wide (sudo when needed) or in the user's home
 INSTALL_DIR=""
 BIN_DIR=""

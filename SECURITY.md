@@ -220,27 +220,29 @@ each release is a new `v1.0.x` tag.
 ```bash
 TAG=v1.0.53                          # the release to verify
 ASSET=sidehub-agent-linux-x64.tar.gz # your platform
-curl -fsSLO "https://github.com/toregua/side_hub_agent/releases/download/$TAG/$ASSET"
-curl -fsSLO "https://github.com/toregua/side_hub_agent/releases/download/$TAG/checksums.sha256"
+curl -fsSLO "https://github.com/vincentaugerot/side_hub_agent/releases/download/$TAG/$ASSET"
+curl -fsSLO "https://github.com/vincentaugerot/side_hub_agent/releases/download/$TAG/checksums.sha256"
 
 # 1. Checksum (macOS: shasum -a 256 -c --ignore-missing checksums.sha256)
 sha256sum -c --ignore-missing checksums.sha256
 
 # 2. Provenance: built by this repo's release workflow (GitHub CLI >= 2.49)
-gh attestation verify "$ASSET" --repo toregua/side_hub_agent
-gh attestation verify checksums.sha256 --repo toregua/side_hub_agent
+gh attestation verify "$ASSET" --repo vincentaugerot/side_hub_agent
+gh attestation verify checksums.sha256 --repo vincentaugerot/side_hub_agent
 ```
 
 `gh attestation verify` prints the workflow, commit and tag the file was built from; it fails
-if the file was not produced by `toregua/side_hub_agent`'s workflow. Releases published before
+if the file was not produced by `vincentaugerot/side_hub_agent`'s workflow. Releases published before
 the attestation was added (up to the first tag that includes it) only have `checksums.sha256`.
+Releases up to v1.0.118 were built when the repository was `toregua/side_hub_agent`: their
+attestation names that repository, so verify them with `--repo toregua/side_hub_agent`.
 
 ## Reporting a vulnerability
 
 Please **do not open a public issue** for security problems.
 
 Report it privately through GitHub's
-[private vulnerability reporting](https://github.com/toregua/side_hub_agent/security/advisories/new)
+[private vulnerability reporting](https://github.com/vincentaugerot/side_hub_agent/security/advisories/new)
 (*Security → Report a vulnerability* on the repository). Include:
 
 - the agent version (the `Agent version:` line in the agent log) and platform,

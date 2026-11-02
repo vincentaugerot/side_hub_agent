@@ -253,7 +253,7 @@ jobs:
           sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' scripts/install.sh | tr -d "'" | sed 's/^RELEASE_SIGNING_PUBKEY=//' > pubkey.pem
           openssl dgst -sha256 -verify pubkey.pem -signature release/checksums.sha256.sig release/checksums.sha256
 
-      # Verify with: gh attestation verify <file> --repo toregua/side_hub_agent (see SECURITY.md)
+      # Verify with: gh attestation verify <file> --repo vincentaugerot/side_hub_agent (see SECURITY.md)
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:

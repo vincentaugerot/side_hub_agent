@@ -18,7 +18,7 @@ public sealed record SelfUpdateSupport(bool Supported, string? Reason, string? I
 /// </summary>
 public static class SelfUpdate
 {
-    public const string GitHubRepository = "toregua/side_hub_agent";
+    public const string GitHubRepository = "vincentaugerot/side_hub_agent";
 
     /// <summary>Written by install.sh / install.ps1 in every install folder.</summary>
     public const string InstallMarker = ".sidehub-agent-install";

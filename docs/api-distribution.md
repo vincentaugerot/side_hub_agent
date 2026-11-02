@@ -106,7 +106,7 @@ GITHUB_APP_ID=1234567
 GITHUB_INSTALLATION_ID=12345678
 GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 
-AGENT_REPO_OWNER=toregua
+AGENT_REPO_OWNER=vincentaugerot
 AGENT_REPO_NAME=side_hub_agent
 ```
 
@@ -131,7 +131,7 @@ const octokit = new Octokit({
   },
 });
 
-const REPO_OWNER = process.env.AGENT_REPO_OWNER || 'toregua';
+const REPO_OWNER = process.env.AGENT_REPO_OWNER || 'vincentaugerot';
 const REPO_NAME = process.env.AGENT_REPO_NAME || 'side_hub_agent';
 
 const PLATFORM_ALIASES: Record<string, string> = {
@@ -316,6 +316,6 @@ export default router;
 ## Sécurité
 
 1. **Vérification des checksums**: `install.sh` / `install.ps1` téléchargent `checksums.sha256` directement depuis GitHub Releases (pas via ce proxy) et abandonnent l'installation si le SHA256 de l'archive ne correspond pas. Le proxy doit donc servir l'archive inchangée.
-2. **Attestation de provenance**: chaque archive et `checksums.sha256` sont attestés par `actions/attest-build-provenance` (vérification : `gh attestation verify <fichier> --repo toregua/side_hub_agent`, cf. `SECURITY.md`)
+2. **Attestation de provenance**: chaque archive et `checksums.sha256` sont attestés par `actions/attest-build-provenance` (vérification : `gh attestation verify <fichier> --repo vincentaugerot/side_hub_agent`, cf. `SECURITY.md`)
 3. **HTTPS only**: Tous les téléchargements via HTTPS
 4. **Signature des exécutables**: sous Windows, signature Authenticode (Azure Artifact Signing) dans la pipeline de release, activée par la variable `ARTIFACT_SIGNING_ENDPOINT` (cf. `SECURITY.md`). Pas encore de codesign ni de notarisation sous macOS

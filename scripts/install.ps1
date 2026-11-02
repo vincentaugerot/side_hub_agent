@@ -24,7 +24,7 @@ $InstallMarker = ".sidehub-agent-install"
 # Checksums come straight from GitHub Releases, not through the SideHub API that hands out the archive (a redirect
 # to the release asset):
 # a compromised API cannot hand out both a tampered archive and a matching checksum.
-$GitHubRepo = if ($env:SIDEHUB_GITHUB_REPO) { $env:SIDEHUB_GITHUB_REPO } else { "toregua/side_hub_agent" }
+$GitHubRepo = if ($env:SIDEHUB_GITHUB_REPO) { $env:SIDEHUB_GITHUB_REPO } else { "vincentaugerot/side_hub_agent" }
 
 # Release signing key (RSA, PKCS#1 v1.5 / SHA-256 over checksums.sha256), the private half is the
 # RELEASE_SIGNING_KEY secret of the release workflow. Same key as install.sh (ReleaseSigningKeyTests).

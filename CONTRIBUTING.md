@@ -12,7 +12,7 @@ Thanks for your interest in contributing to the SideHub Agent! This guide will h
 
 ```bash
 # Clone the repository
-git clone https://github.com/toregua/side_hub_agent.git
+git clone https://github.com/vincentaugerot/side_hub_agent.git
 cd side_hub_agent
 
 # Build
@@ -113,7 +113,7 @@ Update README with troubleshooting section
 
 ## Reporting issues
 
-- Use [GitHub Issues](https://github.com/toregua/side_hub_agent/issues)
+- Use [GitHub Issues](https://github.com/vincentaugerot/side_hub_agent/issues)
 - Include: OS, .NET version, agent version, config (redact tokens), and logs
 - For bugs, include steps to reproduce
 

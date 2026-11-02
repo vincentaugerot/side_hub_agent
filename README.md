@@ -556,7 +556,7 @@ and drops after 3 missed heartbeat acknowledgements.
 Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download) and [Node.js](https://nodejs.org/).
 
 ```bash
-git clone https://github.com/toregua/side_hub_agent.git
+git clone https://github.com/vincentaugerot/side_hub_agent.git
 cd side_hub_agent
 
 dotnet build SideHub.Agent
@@ -629,7 +629,7 @@ given. A stale PID file is cleaned up by `sidehub-agent status`.
 ## Links
 
 - **SideHub**: [https://www.sidehub.io](https://www.sidehub.io)
-- **Issues**: [GitHub Issues](https://github.com/toregua/side_hub_agent/issues)
+- **Issues**: [GitHub Issues](https://github.com/vincentaugerot/side_hub_agent/issues)
 - **Security**: [SECURITY.md](SECURITY.md)
 
 ## License

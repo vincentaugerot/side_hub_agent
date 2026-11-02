@@ -13,7 +13,7 @@
 
 [Unit]
 Description=SideHub agent (%f)
-Documentation=https://github.com/toregua/side_hub_agent
+Documentation=https://github.com/vincentaugerot/side_hub_agent
 After=network-online.target
 Wants=network-online.target
 
