@@ -11,6 +11,8 @@ namespace SideHub.Agent.Conversation;
 /// <item><c>"type":"user"</c> lines: the user's messages (a string, or text and image parts), and the results of tool
 /// calls (<c>tool_result</c> parts, matched to their call by <c>tool_use_id</c>);</item>
 /// <item><c>"type":"assistant"</c> lines: one content part per line (<c>text</c>, <c>tool_use</c>, <c>thinking</c>);</item>
+/// <item><c>"type":"attachment"</c> lines of a <c>queued_command</c>: a message the user typed while Claude worked, or the
+/// notice of a background task;</item>
 /// <item>every other line type is the CLI's metadata (titles, modes, attachments, requests): not part of the thread.</item>
 /// </list>
 /// Lines of sub-agents (<c>isSidechain</c>, unless <paramref name="sidechain"/>: the transcript of a sub-agent, see
@@ -44,6 +46,9 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         if ((line.Contains("\"queue-operation\"", StringComparison.Ordinal) || line.Contains("\"queued_command\"", StringComparison.Ordinal))
             && line.Contains("task-notification", StringComparison.Ordinal))
             return QueuedNotification(line);
+        // A message the user typed while Claude works, absorbed into the turn: it never comes as a user line
+        if (line.Contains("\"queued_command\"", StringComparison.Ordinal))
+            return QueuedMessage(line);
         // Most lines are metadata: only user and assistant lines are parsed
         if (!line.Contains("\"type\":\"user\"", StringComparison.Ordinal) && !line.Contains("\"type\":\"assistant\"", StringComparison.Ordinal))
             return [];
@@ -198,6 +203,30 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             return content is not null && content.TrimStart().StartsWith("<task-notification>", StringComparison.Ordinal)
                 ? TaskNotifications("", Timestamp(root), content.Trim(), notes: false)
                 : [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// <c>{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"…"}}</c>: a message the
+    /// user typed while Claude worked, given to Claude within the running turn (« absorbed mid-turn »), where the terminal
+    /// shows it. It is a message of the user, in the turn that absorbed it: it starts no turn. A message queued until the
+    /// turn ends comes as a user line instead, never as this attachment.
+    /// </summary>
+    private List<ConversationEvent> QueuedMessage(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || Str(root, "type") != "attachment" || (!sidechain && True(root, "isSidechain"))
+                || Prop(root, "attachment") is not { ValueKind: JsonValueKind.Object } attachment || Str(attachment, "type") != "queued_command"
+                || (Str(attachment, "commandMode") ?? "prompt") != "prompt" || Str(root, "uuid") is not { } id)
+                return [];
+            return UserText(id, Timestamp(root), Str(attachment, "prompt"));
         }
         catch (JsonException)
         {

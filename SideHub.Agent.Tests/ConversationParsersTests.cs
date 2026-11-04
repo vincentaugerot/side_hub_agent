@@ -225,6 +225,33 @@ public class ConversationParsersTests
     }
 
     [Fact]
+    public void Claude_MessageTypedWhileClaudeWorks_IsAUserMessageOfTheTurnThatAbsorbedIt()
+    {
+        var parser = new ClaudeConversationParser(Cwd, Images);
+        Assert.Contains(Turns(parser, ClaudeUser), e => e.Kind == ConversationKinds.Turn);
+        parser.Parse(ClaudeBash);
+
+        // As Claude Code writes it once the running turn takes it in: the queue's operations carry no message
+        Assert.Empty(parser.Parse("""{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-04T20:49:24.705Z","content":"et des fois ca marche"}"""));
+        Assert.Empty(parser.Parse("""{"type":"queue-operation","operation":"remove","timestamp":"2026-11-04T20:49:30.114Z","content":"et des fois ca marche","reason":"absorbed_mid_turn"}"""));
+        var message = Assert.Single(parser.Parse(
+            """{"parentUuid":"p-1","isSidechain":false,"attachment":{"type":"queued_command","prompt":"et des fois ca marche","source_uuid":"s-1","commandMode":"prompt","origin":{"kind":"human"},"timestamp":"2026-11-04T20:49:24.559Z","humanTurn":true},"type":"attachment","uuid":"q-1","timestamp":"2026-11-04T20:49:24.559Z","rendered":[{"content":"<system-reminder>\nThe user sent a new message while you were working:\net des fois ca marche\n</system-reminder>"}],"renderedRole":"system"}"""));
+        Assert.Equal("q-1", message.Id);
+        Assert.Equal(ConversationKinds.User, message.Kind);
+        Assert.Equal("et des fois ca marche", message.Text);
+
+        // An image pasted from SideHub, as in a user line
+        var image = Assert.Single(parser.Parse(
+            """{"isSidechain":false,"attachment":{"type":"queued_command","prompt":"[Image #1: /work/side_hub/.sidehub-images/1-a.png] et celle-ci","commandMode":"prompt","origin":{"kind":"human"}},"type":"attachment","uuid":"q-2","timestamp":"2026-11-04T20:50:00.000Z"}"""));
+        Assert.Equal("et celle-ci", image.Text);
+        Assert.Equal(["1-a.png"], image.Images);
+
+        // Not a message of this conversation: a line of a sub-agent
+        Assert.Empty(parser.Parse(
+            """{"isSidechain":true,"attachment":{"type":"queued_command","prompt":"pour le sous-agent","commandMode":"prompt"},"type":"attachment","uuid":"q-3"}"""));
+    }
+
+    [Fact]
     public void Claude_Monitor_ItsEventsUpdateItsCall_UntilItExpires()
     {
         var parser = new ClaudeConversationParser(Cwd);
