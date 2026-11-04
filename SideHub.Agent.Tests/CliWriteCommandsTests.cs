@@ -404,10 +404,22 @@ public sealed class CliWriteCommandsTests : IDisposable
         Assert.Equal("""{"index":0}""", _api.Calls[0].Body);
     }
 
+    [Fact]
+    public async Task Queue_move_to_agent_posts_the_target_and_the_cli()
+    {
+        _api.Respond("/move-to-agent", EmptyQueue);
+
+        Assert.Equal(0, await QueueCommands.MoveAsync(_client, ["i-1", "--to-agent", "agent-2", "--cli", "codex"], json: false));
+
+        Assert.Equal("POST /api/agents/agent-1/task-queue/items/i-1/move-to-agent", Assert.Single(_api.Methods));
+        Assert.Equal("""{"targetAgentId":"agent-2","cli":"codex"}""", _api.Calls[0].Body);
+    }
+
     [Theory]
     [InlineData("i-1")]
     [InlineData("i-1|--to|-1")]
     [InlineData("--to|1")]
+    [InlineData("i-1|--to|1|--to-agent|agent-2")]
     public async Task Queue_move_usage_errors_never_call_the_api(string line)
     {
         var args = line.Split('|', StringSplitOptions.RemoveEmptyEntries);

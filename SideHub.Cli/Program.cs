@@ -167,6 +167,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  queue add <taskId>... [--cli claude|codex|agy|copilot|gemini] [--prompt \"...\"] [--no-commit] [--agent <id>]");
     Console.Error.WriteLine("  queue remove <itemId> [--agent <id>]");
     Console.Error.WriteLine("  queue move <itemId> --to <index> [--agent <id>]");
+    Console.Error.WriteLine("  queue move <itemId> --to-agent <agentId> [--cli claude|codex|agy|copilot|gemini] [--agent <id>]");
     Console.Error.WriteLine("  queue pause|resume|skip [--agent <id>]");
     Console.Error.WriteLine("  outgoing show [--agent <id>]");
     Console.Error.WriteLine("  outgoing push [--agent <id>]");

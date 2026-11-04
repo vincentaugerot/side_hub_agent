@@ -849,6 +849,13 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    /// <summary>
+    /// Moves a waiting task to the end of another agent's queue (same workspace and repository, doc 67); the target's
+    /// queue comes back. <paramref name="cli"/> null keeps the task's.
+    /// </summary>
+    public Task<JsonElement> MoveQueuedTaskToAgentAsync(string agentId, string itemId, string targetAgentId, string? cli) =>
+        PostAsync($"api/agents/{agentId}/task-queue/items/{itemId}/move-to-agent", new { targetAgentId, cli });
+
     /// <summary><paramref name="action"/>: pause, resume or skip.</summary>
     public Task<JsonElement> ChangeTaskQueueAsync(string agentId, string action) =>
         PostAsync($"api/agents/{agentId}/task-queue/{action}", null);

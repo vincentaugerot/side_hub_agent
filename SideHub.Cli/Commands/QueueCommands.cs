@@ -71,10 +71,22 @@ public static class QueueCommands
 
     public static async Task<int> MoveAsync(SideHubApiClient client, string[] args, bool json)
     {
-        const string usage = "Usage: sidehub-cli queue move <itemId> --to <index> [--agent <id>]   (index 0 = next to launch)";
-        var itemId = Positionals(args, "--agent", "--to").FirstOrDefault();
+        const string usage = "Usage: sidehub-cli queue move <itemId> --to <index> [--agent <id>]   (index 0 = next to launch)\n"
+            + "       sidehub-cli queue move <itemId> --to-agent <agentId> [--cli claude|codex|agy|copilot|gemini] [--agent <id>]"
+            + "   (end of the queue of another agent of the same repository)";
+        var itemId = Positionals(args, "--agent", "--to", "--to-agent", "--cli").FirstOrDefault();
         var toArg = GetOption(args, "--to");
-        if (itemId is null || toArg is null || !int.TryParse(toArg, out var index) || index < 0)
+        var toAgent = GetOption(args, "--to-agent");
+        if (itemId is not null && toAgent is not null && toArg is null)
+        {
+            if (AgentOf(client, args, usage) is not { } sourceAgentId)
+                return 1;
+            var target = await client.MoveQueuedTaskToAgentAsync(sourceAgentId, itemId, toAgent, GetOption(args, "--cli"));
+            if (!json)
+                Console.WriteLine($"Moved {itemId} to the end of agent {toAgent}'s queue.\n");
+            return Print(target, json);
+        }
+        if (itemId is null || toArg is null || toAgent is not null || !int.TryParse(toArg, out var index) || index < 0)
         {
             Console.Error.WriteLine(usage);
             return 1;

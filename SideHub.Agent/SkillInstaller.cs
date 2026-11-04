@@ -120,6 +120,7 @@ Reviewing an article a workflow wrote: `approval list`, `drive read <pageId>`, c
 ### Task queues and push (user)
 - `sidehub-cli queue show [--agent <id>]`: The task an agent is on and the tasks waiting (default: this agent)
 - `sidehub-cli queue add <taskId>... [--agent <id>] [--cli claude|codex|agy|copilot|gemini]`, `queue remove <itemId>`, `queue move <itemId> --to <index>`, `queue pause|resume|skip`: Chain tasks on an agent
+- `sidehub-cli queue move <itemId> --to-agent <agentId> [--cli <cli>]`: Move a waiting task to the end of the queue of another agent of the same repository (not a review fix)
 - `sidehub-cli outgoing show [--agent <id>]`, `outgoing push [--agent <id>]`: Unpushed commits of an agent's branch and their reviews, then push them
 
 ### Secrets and MCP servers
