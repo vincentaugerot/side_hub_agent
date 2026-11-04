@@ -27,8 +27,15 @@ public static class AgentNotifier
 
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(1);
 
-    public static void SessionStarted(string provider, string cliSessionId) =>
-        Send(new { @event = "cli-session-started", provider, cliSessionId });
+    /// <param name="switched">The CLI itself moved to this session (claude's <c>/resume</c>, <c>/clear</c>): the agent
+    /// ignores it when it is the session it already follows.</param>
+    public static void SessionStarted(string provider, string cliSessionId, bool switched = false)
+    {
+        if (switched)
+            Send(new { @event = "cli-session-started", provider, cliSessionId, switched });
+        else
+            Send(new { @event = "cli-session-started", provider, cliSessionId });
+    }
 
     public static void Launched(string provider, string cwd, int pid) =>
         Send(new { @event = "cli-launched", provider, cwd, pid });

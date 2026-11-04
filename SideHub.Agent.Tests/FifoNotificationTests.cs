@@ -47,6 +47,15 @@ public class FifoNotificationTests
     }
 
     [Fact]
+    public void A_session_the_cli_switched_to_is_told_apart_from_its_launch()
+    {
+        Assert.Equal(new FifoNotification.CliSessionStarted("claude", SessionId, Switched: true),
+            Parse($$"""{"event":"cli-session-started","provider":"claude","cliSessionId":"{{SessionId}}","switched":true}"""));
+        Assert.Equal(new FifoNotification.CliSessionStarted("claude", SessionId),
+            Parse($$"""{"event":"cli-session-started","provider":"claude","cliSessionId":"{{SessionId}}","switched":"yes"}"""));
+    }
+
+    [Fact]
     public void A_cli_exit_is_accepted_with_or_without_its_session_id()
     {
         Assert.Equal(new FifoNotification.CliExited("claude", SessionId),

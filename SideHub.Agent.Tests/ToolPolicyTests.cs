@@ -54,7 +54,7 @@ public class ToolPolicyTests
         Assert.Equal(["--session-id", Session, "--model", "opus", "--dangerously-skip-permissions", "do it"], plan.Arguments.Skip(2));
 
         var hooks = Hooks(plan.Arguments[1]);
-        Assert.Equal(["Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "Stop", "StopFailure", "UserPromptSubmit"], hooks.Keys.Order());
+        Assert.Equal(["Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"], hooks.Keys.Order());
         Assert.Equal(
             [("AskUserQuestion", "cli-state claude waiting-input", 5), (Matcher, "policy check", 60)],
             hooks["PreToolUse"]);

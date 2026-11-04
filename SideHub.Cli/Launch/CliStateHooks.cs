@@ -41,11 +41,16 @@ public static partial class CliStateHooks
     /// is treated the same.</summary>
     public const string LimitErrors = "rate_limit|billing_error";
 
+    /// <summary>Claude's <c>SessionStart</c> sources that may change the session: a startup keeps the one given at launch,
+    /// a compaction keeps its session.</summary>
+    public const string SwitchedSessionSources = "resume|clear";
+
     /// <summary>
     /// The <c>--settings</c> JSON for claude. UserPromptSubmit and PostToolUse: working (PostToolUse also ends a
     /// permission wait once the tool ran); Notification on a permission or input request, PermissionRequest and
     /// PreToolUse of AskUserQuestion: waiting-input (the last two also say what is asked, see <see cref="CliPrompt"/>);
-    /// Stop: idle; StopFailure on a usage limit: limit (doc 60). With a tool policy, a PreToolUse group also runs
+    /// Stop: idle; StopFailure on a usage limit: limit (doc 60); SessionStart on resume and clear: the session claude
+    /// switched to (<c>/resume</c>, <c>/clear</c> leave the one given at launch, a startup keeps it). With a tool policy, a PreToolUse group also runs
     /// <c>sidehub-cli policy check</c> (<see cref="PolicyCheckCommand"/>) on the tools it matches; with
     /// <paramref name="allowMachineMcp"/>, one runs <c>sidehub-cli policy allow</c> (<see cref="PolicyAllowCommand"/>)
     /// on the MCP tools.
@@ -88,6 +93,7 @@ public static partial class CliStateHooks
             Add("PermissionRequest", Group(CliStateCommand.WaitingInput));
             Add("Stop", Group(CliStateCommand.Idle));
             Add("StopFailure", Group(CliStateCommand.Limit, LimitErrors));
+            Add("SessionStart", Group(CliStateCommand.Session, SwitchedSessionSources));
         }
         object PolicyGroup(string matcher, string action, int timeout) => new
         {

@@ -35,8 +35,10 @@ public abstract record FifoNotification
     /// <summary>The codex wrapper: <paramref name="Pid"/> is codex's process, null for wrappers that don't send it.</summary>
     public sealed record CliLaunched(string Provider, string Cwd, int? Pid) : FifoNotification;
 
-    /// <summary>The claude wrapper: the session id it passed (or minted) with <c>--session-id</c> / <c>--resume</c>.</summary>
-    public sealed record CliSessionStarted(string Provider, string CliSessionId) : FifoNotification;
+    /// <summary>The claude wrapper: the session id it passed (or minted) with <c>--session-id</c> / <c>--resume</c>.
+    /// <paramref name="Switched"/>: told by the CLI's own hook, once it moved to this session (claude's <c>/resume</c>,
+    /// <c>/clear</c>), and ignored when it is the session the PTY already runs.</summary>
+    public sealed record CliSessionStarted(string Provider, string CliSessionId, bool Switched = false) : FifoNotification;
 
     /// <summary><c>sidehub-cli launch</c>, once the CLI it started has exited: <paramref name="CliSessionId"/> is the session
     /// it announced, null when it knew none (a new codex session, found by the agent from the launch).</summary>
@@ -147,7 +149,8 @@ public abstract record FifoNotification
                         rejection = "invalid cliSessionId";
                         return null;
                     }
-                    return new CliSessionStarted(provider!, cliSessionId!);
+                    var switched = root.TryGetProperty("switched", out var s) && s.ValueKind == JsonValueKind.True;
+                    return new CliSessionStarted(provider!, cliSessionId!, switched);
                 }
 
                 case "cli-exited":

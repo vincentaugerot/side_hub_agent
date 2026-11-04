@@ -557,11 +557,18 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     return;
 
                 case FifoNotification.CliSessionStarted started:
+                    // Told again by the CLI's hook (a launch with --resume): nothing changed
+                    if (started.Switched && IsCurrentCliSession(ptySessionId, started.Provider, started.CliSessionId))
+                        return;
                     await RecordCliSessionAsync(ptySessionId, started, ct);
                     return;
 
                 // Written by `sidehub-cli launch` once the CLI has exited: its session's usage is final.
                 case FifoNotification.CliExited exited:
+                    // The launcher tells the session it announced; the CLI may have moved to another since (/resume, /clear)
+                    if (_ptyCliSessions.TryGetValue(ptySessionId, out var running) && running.Provider == exited.Provider
+                        && running.CliSessionId != exited.CliSessionId)
+                        exited = exited with { CliSessionId = running.CliSessionId };
                     Log($"CLI exited in PTY {ptySessionId}: provider={exited.Provider} cliSessionId={exited.CliSessionId ?? "(unknown)"}");
                     _ptyCliLaunches.TryRemove(ptySessionId, out _);
                     StopCodexTurnWatch(ptySessionId);
@@ -606,10 +613,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     {
         // The PTY may have closed while the line was in flight: a state is never reported for an unknown PTY.
         if (!_ptySessions.ContainsKey(ptySessionId)) return;
-        // agy takes no session id at launch: its hooks tell the conversation, a new one (/clear) included.
-        if (changed.Provider == "agy" && changed.CliSessionId is { } conversationId
-            && !(_ptyCliSessions.TryGetValue(ptySessionId, out var current) && current.Provider == "agy" && current.CliSessionId == conversationId))
-            await RecordCliSessionAsync(ptySessionId, new FifoNotification.CliSessionStarted("agy", conversationId), ct);
+        // The hooks tell the session the CLI is in: agy takes no session id at launch, and claude leaves the one given
+        // at launch on /resume or /clear (also told by its SessionStart hook, with a sidehub-cli that adds it).
+        if (changed.Provider is "agy" or "claude" && changed.CliSessionId is { } hookSession
+            && !IsCurrentCliSession(ptySessionId, changed.Provider, hookSession))
+            await RecordCliSessionAsync(ptySessionId, new FifoNotification.CliSessionStarted(changed.Provider, hookSession), ct);
         if (changed.Provider == "agy" && changed.State == CliStates.Idle && changed.CliSessionId is { } titled)
             RunInBackground("agy title", () => ReportAntigravityTitleAsync(ptySessionId, titled, ct));
         // A turn ended: its answer for the Reading mode. Before the repeat check, codex reports nothing but idle.
@@ -833,17 +841,21 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 if (feed is null || session is null || feed.CliSessionId != session.CliSessionId || feed.Provider != session.Provider)
                 {
                     feed = session is null ? null : OpenConversationFeed(ptySessionId, session);
-                    if (feed is null && session is null && _ptyCliLaunches.TryGetValue(ptySessionId, out var launched)
-                        && ConversationFeed.Supports(launched))
+                    // Its session is only written with the first message (claude, and codex whose session is not even
+                    // known before): nothing to read yet, not unreadable
+                    var pending = feed is not null ? null
+                        : session is not null ? (ConversationFeed.Supports(session.Provider) ? session.Provider : null)
+                        : _ptyCliLaunches.TryGetValue(ptySessionId, out var launched) && ConversationFeed.Supports(launched) ? launched
+                        : null;
+                    if (pending is not null)
                     {
-                        // Its session starts with the first message (codex): nothing to read yet, not unreadable
-                        var key = $"launched:{launched}";
+                        var key = $"pending:{pending}:{session?.CliSessionId}";
                         if (unavailableFor != key)
                         {
                             unavailableFor = key;
                             await TrySendAsync(new PtyConversationMessage
                             {
-                                PtySessionId = ptySessionId, Provider = launched, Reset = true, Events = [],
+                                PtySessionId = ptySessionId, Provider = pending, CliSessionId = session?.CliSessionId, Reset = true, Events = [],
                             }, ct);
                         }
                     }
@@ -1115,6 +1127,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             await Task.Delay(CodexTurnPollInterval, ct);
         }
     }
+
+    private bool IsCurrentCliSession(string ptySessionId, string provider, string cliSessionId) =>
+        _ptyCliSessions.TryGetValue(ptySessionId, out var current) && current.Provider == provider && current.CliSessionId == cliSessionId;
 
     private async Task RecordCliSessionAsync(string ptySessionId, FifoNotification.CliSessionStarted started, CancellationToken ct)
     {

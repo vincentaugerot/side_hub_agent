@@ -62,7 +62,8 @@ public class CliStateHooksTests : IDisposable
         Assert.Equal((null, "waiting-input"), states["PermissionRequest"]);
         Assert.Equal((null, "idle"), states["Stop"]);
         Assert.Equal(("rate_limit|billing_error", "limit"), states["StopFailure"]);
-        Assert.Equal(7, states.Count);
+        Assert.Equal(("resume|clear", "session"), states["SessionStart"]);
+        Assert.Equal(8, states.Count);
     }
 
     [Theory]
@@ -240,6 +241,17 @@ public class CliStateHooksTests : IDisposable
 
         Assert.Equal(new CliStateCommand.StateReport("claude", state, Session),
             CliStateCommand.Report(["claude", state], () => input));
+    }
+
+    [Fact]
+    public void The_session_start_hook_tells_the_session_claude_switched_to_and_no_state()
+    {
+        var input = Utf8($$"""{"session_id":"{{Session}}","hook_event_name":"SessionStart","source":"resume"}""");
+
+        Assert.Equal(Session, CliStateCommand.SwitchedSession(["claude", "session"], () => input));
+        Assert.Null(CliStateCommand.SwitchedSession(["claude", "session"], () => null));
+        Assert.Null(CliStateCommand.SwitchedSession(["claude", "idle"], () => input));
+        Assert.Null(CliStateCommand.Report(["claude", "session"], () => input));
     }
 
     [Fact]

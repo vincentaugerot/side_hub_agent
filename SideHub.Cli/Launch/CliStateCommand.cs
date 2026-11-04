@@ -9,7 +9,9 @@ namespace SideHub.Cli.Launch;
 /// <c>conversationId</c>) and <c>sidehub-cli cli-state codex &lt;event-json&gt;</c> (codex's <c>notify</c> program):
 /// tells the agent hosting the terminal what the CLI is doing. Installed by <see cref="CliStateHooks"/>.
 /// <c>sidehub-cli cli-state claude limit</c> (Claude's <c>StopFailure</c> hook) tells that the turn stopped on the plan's
-/// usage limit, with what Claude said (doc 60).
+/// usage limit, with what Claude said (doc 60). <c>sidehub-cli cli-state claude session</c> (Claude's <c>SessionStart</c>
+/// hook on <c>resume</c> and <c>clear</c>) tells the session the CLI switched to: <c>/resume</c> and <c>/clear</c> leave
+/// the one announced at launch.
 /// <para>
 /// It runs inside the CLI's turn, so it must never slow it down nor fail it: it writes nothing to stdout (Claude
 /// would add it to the conversation on UserPromptSubmit) or stderr, gives up quickly, and always exits 0.
@@ -26,6 +28,9 @@ public static class CliStateCommand
     /// <summary>Not a state: the turn stopped on a usage limit (<see cref="LimitReport"/>).</summary>
     public const string Limit = "limit";
 
+    /// <summary>Not a state: the CLI switched to another session (<see cref="SwitchedSession"/>).</summary>
+    public const string Session = "session";
+
     /// <summary>Longest message passed on to the agent: it keeps <c>MaxMessageLength</c> (300) once masked.</summary>
     public const int MaxLimitMessageLength = 1000;
 
@@ -40,7 +45,12 @@ public static class CliStateCommand
     {
         try
         {
-            if (LimitReport(args, ReadHookInput) is { } limit)
+            if (args is ["claude", Session])
+            {
+                if (SwitchedSession(args, ReadHookInput) is { } session)
+                    AgentNotifier.SessionStarted("claude", session, switched: true);
+            }
+            else if (LimitReport(args, ReadHookInput) is { } limit)
                 AgentNotifier.Limit(limit.Provider, limit.CliSessionId, limit.Error, limit.Message);
             else if (Report(args, ReadHookInput) is { } report)
                 AgentNotifier.State(report.Provider, report.State, report.CliSessionId, report.Prompt);
@@ -94,6 +104,13 @@ public static class CliStateCommand
             message = message[..MaxLimitMessageLength];
         return new LimitReportData("claude", SessionIdFromHookInput(input), error, string.IsNullOrEmpty(message) ? null : message);
     }
+
+    /// <summary>
+    /// The session claude switched to for <c>claude session</c> (a <c>SessionStart</c> hook: <c>/resume</c>, <c>/clear</c>,
+    /// or a launch with <c>--resume</c> / <c>--continue</c>), null for other arguments or an input without a session.
+    /// </summary>
+    public static string? SwitchedSession(string[] args, Func<byte[]?> hookInput) =>
+        args is ["claude", Session] ? SessionIdFromHookInput(hookInput()) : null;
 
     private static string? Str(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
