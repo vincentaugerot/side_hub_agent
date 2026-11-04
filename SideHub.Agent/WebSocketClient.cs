@@ -1,3 +1,4 @@
+using SideHub.Agent.Conversation;
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Net.WebSockets;
@@ -54,6 +55,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly CliStateTracker _cliStates = new();
     // The last answer of each PTY's CLI, for the phone's Reading mode (pty.cli-message).
     private readonly CliMessageTracker _cliMessages = new();
+    /// <summary>PTYs someone looks at in Conversation mode (doc 69), with the token that stops following their transcript.</summary>
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _conversationWatches = new();
     // Reads a CLI session's last answer, per provider (claude, codex).
     private readonly Dictionary<string, ICliSessionUsageHarvester> _lastMessageReaders = new();
     // The secrets of each PTY (its env and which keys are secrets): masked in what is sent from its transcript too.
@@ -401,6 +404,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _ptyCliSessions.TryRemove(ptySessionId, out _);
         _cliStates.Clear(ptySessionId);
         _cliMessages.Clear(ptySessionId);
+        StopConversationWatch(ptySessionId);
         _ptySecrets.TryRemove(ptySessionId, out _);
         StopClaudeTitleWatchers(ptySessionId);
         if (!OperatingSystem.IsWindows())
@@ -748,6 +752,136 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         }
     }
 
+    /// <summary>How often a watched transcript is read again for new lines.</summary>
+    private static readonly TimeSpan ConversationPollInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>How long a watch waits for a PTY that does not exist (yet) before giving up.</summary>
+    private static readonly TimeSpan ConversationPtyWait = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// <c>pty.conversation.watch</c> (doc 69): the first viewer opened the PTY in Conversation mode (<c>on</c>), or the
+    /// last one left it. Watching again restarts from a snapshot.
+    /// </summary>
+    private void HandleConversationWatch(IncomingMessage message, CancellationToken ct)
+    {
+        if (message.PtySessionId is not { Length: > 0 } ptySessionId) return;
+        StopConversationWatch(ptySessionId);
+        if (message.On != true)
+        {
+            Log($"Conversation of PTY {ptySessionId} unwatched");
+            return;
+        }
+        // The PTY may not exist yet (the agent restarted, the tab starts it again): the watch waits for it
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _conversationWatches[ptySessionId] = cts;
+        RunInBackground("conversation", () => WatchConversationAsync(ptySessionId, cts.Token));
+    }
+
+    private void StopConversationWatch(string ptySessionId)
+    {
+        if (!_conversationWatches.TryRemove(ptySessionId, out var cts)) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private void StopAllConversationWatches()
+    {
+        foreach (var ptySessionId in _conversationWatches.Keys.ToList())
+            StopConversationWatch(ptySessionId);
+    }
+
+    /// <summary>
+    /// Follows the transcript of the PTY's CLI while it is watched: a snapshot first (and again when another CLI session
+    /// starts in the PTY), then the events added or changed, read every second. A CLI without Conversation mode, or a
+    /// transcript not found yet, is reported once as unavailable and looked for again.
+    /// </summary>
+    private async Task WatchConversationAsync(string ptySessionId, CancellationToken ct)
+    {
+        ConversationFeed? feed = null;
+        string? unavailableFor = null;
+        var waitingSince = DateTime.UtcNow;
+        while (!ct.IsCancellationRequested)
+        {
+            // A PTY that ended stops its watch (CleanupNotifyFifo); one that never came is given up after a while
+            if (!_ptySessions.ContainsKey(ptySessionId))
+            {
+                if (DateTime.UtcNow - waitingSince > ConversationPtyWait)
+                {
+                    Log($"Conversation of PTY {ptySessionId} unwatched: no such PTY");
+                    if (_conversationWatches.TryGetValue(ptySessionId, out var mine) && mine.Token == ct)
+                        StopConversationWatch(ptySessionId);
+                    return;
+                }
+                await Task.Delay(ConversationPollInterval, ct);
+                continue;
+            }
+            try
+            {
+                var session = _ptyCliSessions.TryGetValue(ptySessionId, out var known) ? known : null;
+                if (feed is null || session is null || feed.CliSessionId != session.CliSessionId || feed.Provider != session.Provider)
+                {
+                    feed = session is null ? null : OpenConversationFeed(ptySessionId, session);
+                    if (feed is null)
+                    {
+                        var key = $"{session?.Provider}:{session?.CliSessionId}";
+                        if (unavailableFor != key)
+                        {
+                            unavailableFor = key;
+                            await TrySendAsync(new PtyConversationMessage
+                            {
+                                PtySessionId = ptySessionId, Provider = session?.Provider, CliSessionId = session?.CliSessionId,
+                                Reset = true, Unavailable = true, Events = [],
+                            }, ct);
+                        }
+                    }
+                    else
+                    {
+                        unavailableFor = null;
+                        feed.Poll();
+                        var snapshot = feed.Snapshot();
+                        Log($"Conversation of PTY {ptySessionId} watched: {snapshot.Count} events (provider={feed.Provider} cliSessionId={feed.CliSessionId})");
+                        await TrySendAsync(new PtyConversationMessage
+                        {
+                            PtySessionId = ptySessionId, Provider = feed.Provider, CliSessionId = feed.CliSessionId,
+                            Reset = true, Events = snapshot,
+                        }, ct);
+                    }
+                }
+                else if (feed.Poll() is { Count: > 0 } changed)
+                {
+                    await TrySendAsync(new PtyConversationMessage
+                    {
+                        PtySessionId = ptySessionId, Provider = feed.Provider, CliSessionId = feed.CliSessionId, Events = changed,
+                    }, ct);
+                }
+                if (feed is not null)
+                    foreach (var type in feed.TakeUnrecognized())
+                        Log($"Conversation line not recognized in PTY {ptySessionId} (provider={feed.Provider} cli={VersionInfo.CachedCliVersions?.GetValueOrDefault(feed.Provider) ?? "?"} type={type})");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Transcript moved or unreadable: looked for again
+                feed = null;
+            }
+            await Task.Delay(ConversationPollInterval, ct);
+        }
+    }
+
+    /// <summary>The conversation of the PTY's CLI session, or null when its CLI has no Conversation mode or no transcript yet.</summary>
+    private ConversationFeed? OpenConversationFeed(string ptySessionId, PtyCliSession session)
+    {
+        if (!_ptyCwd.TryGetValue(ptySessionId, out var cwd)
+            || !_lastMessageReaders.TryGetValue(session.Provider, out var reader)
+            || ConversationFeed.ParserFor(session.Provider, cwd) is not { } parser
+            || reader.SessionFiles(cwd, session.CliSessionId).FirstOrDefault() is not { } path
+            || !File.Exists(path))
+            return null;
+        return new ConversationFeed(session.Provider, session.CliSessionId, path, parser, text =>
+            text is not null && _ptySecrets.TryGetValue(ptySessionId, out var secrets) && SecretMasker.For(secrets.Env, secrets.Keys) is { } masker
+                ? masker.Process(text) + masker.Flush()
+                : text);
+    }
+
     /// <summary>agy titles a conversation once its first turn ended: sent once, like claude's ai-title.</summary>
     private async Task ReportAntigravityTitleAsync(string ptySessionId, string cliSessionId, CancellationToken ct)
     {
@@ -1058,6 +1192,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 _everConnected = true;
 
                 await SendConnectedMessageAsync(ct);
+                // The backend asks again for the PTYs still looked at in Conversation mode
+                StopAllConversationWatches();
                 await ReportAlivePtySessionsAsync(ct);
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
                 RunInBackground("pending review.changes replay", () => _reviews.ReplayPendingAsync(ct));
@@ -1393,6 +1529,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
+                    break;
+                case "pty.conversation.watch":
+                    HandleConversationWatch(message, ct);
                     break;
                 case "review.round-start":
                     RunInBackground("review.round-start", () => HandleReviewRoundStartAsync(message, ct));
@@ -2454,6 +2593,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _ptyCliSessions.Clear();
         _cliStates.ClearAll();
         _cliMessages.ClearAll();
+        StopAllConversationWatches();
         foreach (var cts in _ptyFifoReaders.Values)
         {
             try { cts.Cancel(); cts.Dispose(); } catch { }

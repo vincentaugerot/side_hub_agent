@@ -112,6 +112,10 @@ public class IncomingMessage
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; init; }
 
+    /// <summary><c>pty.conversation.watch</c>: whether someone looks at the PTY in Conversation mode (doc 69).</summary>
+    [JsonPropertyName("on")]
+    public bool? On { get; init; }
+
     // file.write fields
     [JsonPropertyName("path")]
     public string? Path { get; init; }
@@ -397,6 +401,38 @@ public sealed record PtyCliPrompt(
 public sealed record PtyCliPromptOption(
     [property: JsonPropertyName("label")] string Label,
     [property: JsonPropertyName("description"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Description = null);
+
+/// <summary>
+/// The conversation of the CLI in a PTY, read from its transcript while someone looks at the PTY in Conversation mode
+/// (doc 69): a snapshot (<see cref="Reset"/>) when watching starts or the CLI session changes, then the events added or
+/// changed. Secrets of the PTY masked. Never stored by the backend: relayed to the PTY's viewers only.
+/// </summary>
+public class PtyConversationMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.conversation";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    /// <summary>The CLI whose conversation it is; null when no CLI runs in the PTY.</summary>
+    [JsonPropertyName("provider")]
+    public string? Provider { get; init; }
+
+    [JsonPropertyName("cliSessionId")]
+    public string? CliSessionId { get; init; }
+
+    /// <summary>The events replace the thread shown (a snapshot), instead of being added to it.</summary>
+    [JsonPropertyName("reset")]
+    public bool Reset { get; init; }
+
+    /// <summary>The conversation cannot be read (no CLI with Conversation mode, transcript not found): the terminal stays.</summary>
+    [JsonPropertyName("unavailable"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Unavailable { get; init; }
+
+    [JsonPropertyName("events")]
+    public required IReadOnlyList<SideHub.Agent.Conversation.ConversationEvent> Events { get; init; }
+}
 
 /// <summary>
 /// The last answer of the CLI in a PTY (its last message with text, read from its transcript at the end of a turn), for
