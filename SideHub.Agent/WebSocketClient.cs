@@ -64,6 +64,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     // Codex launches still looking for their rollout (→ cwd), and the rollouts already tied to a launch.
     private readonly ConcurrentDictionary<object, string> _pendingCodexLaunches = new();
     private readonly ConcurrentDictionary<string, byte> _announcedCodexRollouts = new();
+    // The CLI launched in each PTY whose session is not known yet (codex until its first message), re-reported after a
+    // backend reconnect (pty.cli-launched).
+    private readonly ConcurrentDictionary<string, string> _ptyCliLaunches = new();
+    // The codex sessions whose rollout tells their state (CodexTurnState), per PTY: their notify is not used meanwhile.
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _codexTurnWatches = new();
     private readonly CodexRolloutHarvester? _codexRollouts;
     private readonly AntigravityTranscriptHarvester? _antigravity;
     // The last usage limit reported for each PTY's CLI (cli.limit), so a repeated one is not sent again.
@@ -402,6 +407,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _ptyNotifySecrets.TryRemove(ptySessionId, out _);
         _ptyOpenTasks.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
+        _ptyCliLaunches.TryRemove(ptySessionId, out _);
+        StopCodexTurnWatch(ptySessionId);
         _cliStates.Clear(ptySessionId);
         _cliMessages.Clear(ptySessionId);
         StopConversationWatch(ptySessionId);
@@ -556,6 +563,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // Written by `sidehub-cli launch` once the CLI has exited: its session's usage is final.
                 case FifoNotification.CliExited exited:
                     Log($"CLI exited in PTY {ptySessionId}: provider={exited.Provider} cliSessionId={exited.CliSessionId ?? "(unknown)"}");
+                    _ptyCliLaunches.TryRemove(ptySessionId, out _);
+                    StopCodexTurnWatch(ptySessionId);
                     _cliStates.Clear(ptySessionId);
                     // The terminal is a plain shell again: the backend forgets its CLI (backends that don't know the
                     // message ignore it and clear the state on the final usage report, as before).
@@ -573,6 +582,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
                 // Written by the CLI's hooks through `sidehub-cli cli-state` (see CliStateHooks).
                 case FifoNotification.CliStateChanged changed:
+                    // A codex session whose rollout is followed: its notify says less (only ends of turns, sub-threads' too)
+                    if (changed.Provider == "codex" && _codexTurnWatches.ContainsKey(ptySessionId))
+                        return;
                     await ReportCliStateAsync(ptySessionId, changed, ct);
                     return;
 
@@ -821,7 +833,21 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 if (feed is null || session is null || feed.CliSessionId != session.CliSessionId || feed.Provider != session.Provider)
                 {
                     feed = session is null ? null : OpenConversationFeed(ptySessionId, session);
-                    if (feed is null)
+                    if (feed is null && session is null && _ptyCliLaunches.TryGetValue(ptySessionId, out var launched)
+                        && ConversationFeed.Supports(launched))
+                    {
+                        // Its session starts with the first message (codex): nothing to read yet, not unreadable
+                        var key = $"launched:{launched}";
+                        if (unavailableFor != key)
+                        {
+                            unavailableFor = key;
+                            await TrySendAsync(new PtyConversationMessage
+                            {
+                                PtySessionId = ptySessionId, Provider = launched, Reset = true, Events = [],
+                            }, ct);
+                        }
+                    }
+                    else if (feed is null)
                     {
                         var key = $"{session?.Provider}:{session?.CliSessionId}";
                         if (unavailableFor != key)
@@ -962,6 +988,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private void RecordCliLaunch(string ptySessionId, FifoNotification.CliLaunched launched)
     {
         Log($"CLI launched in PTY {ptySessionId}: provider={launched.Provider} cwd={launched.Cwd} pid={launched.Pid}");
+        // A new CLI in the terminal: the session it ran before (if any) is over, and its own is not known yet
+        _ptyCliSessions.TryRemove(ptySessionId, out _);
+        StopCodexTurnWatch(ptySessionId);
+        _ptyCliLaunches[ptySessionId] = launched.Provider;
+        RunInBackground("cli launched", () => TrySendAsync(
+            new PtyCliLaunchedMessage { PtySessionId = ptySessionId, Provider = launched.Provider }, CancellationToken.None));
 
         LaunchObservation? observation = null;
         if (launched.Pid is { } launchedPid
@@ -1035,6 +1067,55 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         }
     }
 
+    /// <summary>How often the rollout of a codex session is read for the start and end of its turns.</summary>
+    private static readonly TimeSpan CodexTurnPollInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Follows the state of the PTY's codex session in its rollout (<see cref="CodexTurnState"/>) until its CLI exits, the
+    /// PTY ends or another session starts in it.
+    /// </summary>
+    private void StartCodexTurnWatch(string ptySessionId, string cliSessionId)
+    {
+        StopCodexTurnWatch(ptySessionId);
+        if (_codexRollouts is null || !_ptyFifoReaders.TryGetValue(ptySessionId, out var reader))
+            return;
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(reader.Token);
+        _codexTurnWatches[ptySessionId] = cts;
+        RunInBackground("codex turns", () => WatchCodexTurnsAsync(ptySessionId, cliSessionId, cts.Token));
+    }
+
+    private void StopCodexTurnWatch(string ptySessionId)
+    {
+        if (!_codexTurnWatches.TryRemove(ptySessionId, out var cts)) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task WatchCodexTurnsAsync(string ptySessionId, string cliSessionId, CancellationToken ct)
+    {
+        JsonlTail? rollout = null;
+        string? reported = null;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (rollout is null && _codexRollouts!.SessionFiles(_workingDirectory, cliSessionId).FirstOrDefault() is { } path)
+                    rollout = new JsonlTail(path, CodexTurnState.MaxLineBytes);
+                if (rollout is not null && CodexTurnState.Of(rollout.ReadNewLines()) is { } state && state != reported)
+                {
+                    reported = state;
+                    await ReportCliStateAsync(ptySessionId, new FifoNotification.CliStateChanged("codex", state, cliSessionId), ct);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Rollout moved or unreadable: looked for again, read from its start
+                rollout = null;
+            }
+            await Task.Delay(CodexTurnPollInterval, ct);
+        }
+    }
+
     private async Task RecordCliSessionAsync(string ptySessionId, FifoNotification.CliSessionStarted started, CancellationToken ct)
     {
         var (provider, cliSessionId) = (started.Provider, started.CliSessionId);
@@ -1044,7 +1125,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _cliSessionUsage.SessionStarted(ptySessionId, provider, cliSessionId,
             _ptyCwd.TryGetValue(ptySessionId, out var cwd) ? cwd : _workingDirectory);
         _ptyCliSessions[ptySessionId] = new PtyCliSession(provider, cliSessionId);
+        _ptyCliLaunches.TryRemove(ptySessionId, out _);
         NoteSessionBase(ptySessionId);
+        if (provider == "codex")
+            StartCodexTurnWatch(ptySessionId, cliSessionId);
+        else
+            StopCodexTurnWatch(ptySessionId);
         await SendAsync(new PtyCliSessionStartedMessage
         {
             PtySessionId = ptySessionId,
@@ -2609,7 +2695,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     /// conversation runs in the PTY and its title.</summary>
     private async Task ReportCliSessionAsync(string ptySessionId, CancellationToken ct)
     {
-        if (!_ptyCliSessions.TryGetValue(ptySessionId, out var cliSession)) return;
+        if (!_ptyCliSessions.TryGetValue(ptySessionId, out var cliSession))
+        {
+            if (_ptyCliLaunches.TryGetValue(ptySessionId, out var launched))
+                await SendAsync(new PtyCliLaunchedMessage { PtySessionId = ptySessionId, Provider = launched }, ct);
+            return;
+        }
         await SendAsync(new PtyCliSessionStartedMessage
         {
             PtySessionId = ptySessionId,
@@ -2653,6 +2744,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _ptyLastOutput.Clear();
         _ptyCwd.Clear();
         _ptyCliSessions.Clear();
+        _ptyCliLaunches.Clear();
+        foreach (var sid in _codexTurnWatches.Keys.ToList())
+            StopCodexTurnWatch(sid);
         _cliStates.ClearAll();
         _cliMessages.ClearAll();
         StopAllConversationWatches();

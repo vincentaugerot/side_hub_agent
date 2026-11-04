@@ -115,6 +115,9 @@ public sealed class ConversationFeed
     /// The parser of a CLI's transcript, null for a CLI without Conversation mode. <paramref name="imageDirectories"/>: the
     /// folders of the images pasted from SideHub, as written in the PTY.
     /// </summary>
+    /// <summary>Whether the CLI has a Conversation mode (<see cref="ParserFor"/> knows its transcript).</summary>
+    public static bool Supports(string provider) => provider is "claude" or "codex";
+
     public static IConversationParser? ParserFor(string provider, string cwd, IReadOnlyCollection<string>? imageDirectories = null) => provider switch
     {
         "claude" => new ClaudeConversationParser(cwd, imageDirectories),

@@ -493,6 +493,23 @@ public class PtyCliMessage
 }
 
 /// <summary>
+/// A coding CLI started in a PTY without a session id yet (<c>sidehub-cli launch</c> wrote <c>cli-launched</c>: codex,
+/// which writes its session only once the conversation starts). The backend knows the tab runs that CLI from its
+/// launch, so its Conversation mode is offered before the first message; <c>pty.cli-session-started</c> follows.
+/// </summary>
+public class PtyCliLaunchedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.cli-launched";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+}
+
+/// <summary>
 /// The coding CLI of a PTY has exited (<c>sidehub-cli launch</c> wrote <c>cli-exited</c>): the terminal is a plain
 /// shell again. The backend forgets the PTY's CLI (provider, state) so the UI stops treating it as a CLI.
 /// </summary>
