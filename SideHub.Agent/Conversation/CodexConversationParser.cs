@@ -22,6 +22,10 @@ namespace SideHub.Agent.Conversation;
 public sealed class CodexConversationParser(string cwd, IReadOnlyCollection<string>? imageDirectories = null) : IConversationParser
 {
     private readonly IReadOnlyCollection<string> _imageDirectories = imageDirectories ?? [];
+    private readonly TurnTracker _turn = new();
+    /// <summary>Output tokens of the whole session (<c>token_count</c>), and that total when the turn in progress started.</summary>
+    private long _sessionTokens;
+    private long _turnBase;
 
     private readonly HashSet<string> _unrecognized = new(StringComparer.Ordinal);
     private readonly List<string> _newUnrecognized = [];
@@ -33,6 +37,8 @@ public sealed class CodexConversationParser(string cwd, IReadOnlyCollection<stri
 
     public IReadOnlyList<ConversationEvent> Parse(string line)
     {
+        if (line.Contains("\"token_count\"", StringComparison.Ordinal))
+            return TokenCount(line);
         if (!line.Contains("\"item_completed\"", StringComparison.Ordinal) && !line.Contains("\"item_started\"", StringComparison.Ordinal))
             return [];
         try
@@ -50,7 +56,45 @@ public sealed class CodexConversationParser(string cwd, IReadOnlyCollection<stri
             if (started is null || Prop(payload, "item") is not { ValueKind: JsonValueKind.Object } item
                 || Str(item, "id") is not { } id || Str(item, "type") is not { } type)
                 return [];
-            return Item(item, id, type, Timestamp(root), started.Value) is { } found ? [found] : [];
+            var at = Timestamp(root);
+            var events = new List<ConversationEvent>(2);
+            if (Item(item, id, type, at, started.Value) is { } found)
+            {
+                events.Add(found);
+                if (found.Kind == ConversationKinds.User)
+                {
+                    _turnBase = _sessionTokens;
+                    events.Add(_turn.Start(found.Id, at));
+                    return events;
+                }
+            }
+            // The next message of the user is not part of the turn before it
+            if (type != "UserMessage" && _turn.Touch(at) is { } turn) events.Add(turn);
+            return events;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// <c>event_msg</c> <c>token_count</c>: the session's total output tokens so far (<c>info.total_token_usage</c>); the
+    /// turn's are what it grew by since the turn started, so a count repeated by Codex is never counted twice.
+    /// </summary>
+    private List<ConversationEvent> TokenCount(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (Str(root, "type") != "event_msg" || Prop(root, "payload") is not { ValueKind: JsonValueKind.Object } payload
+                || Str(payload, "type") != "token_count" || Prop(payload, "info") is not { ValueKind: JsonValueKind.Object } info
+                || Prop(info, "total_token_usage") is not { ValueKind: JsonValueKind.Object } total
+                || Prop(total, "output_tokens") is not { ValueKind: JsonValueKind.Number } output || !output.TryGetInt64(out var tokens))
+                return [];
+            _sessionTokens = Math.Max(_sessionTokens, tokens);
+            return _turn.SetTokens(_sessionTokens - _turnBase, Timestamp(root)) is { } turn ? [turn] : [];
         }
         catch (JsonException)
         {

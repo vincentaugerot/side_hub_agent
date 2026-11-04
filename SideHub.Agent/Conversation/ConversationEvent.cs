@@ -60,6 +60,14 @@ public sealed record ConversationEvent
     [JsonPropertyName("images"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Images { get; init; }
 
+    /// <summary>For a <see cref="ConversationKinds.Turn"/>: when the CLI last wrote in it (UTC).</summary>
+    [JsonPropertyName("endedAt"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? EndedAt { get; init; }
+
+    /// <summary>For a <see cref="ConversationKinds.Turn"/>: the tokens the model produced in it so far.</summary>
+    [JsonPropertyName("tokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? Tokens { get; init; }
+
     /// <summary>The length of its texts, to keep a snapshot within <see cref="ConversationFeed.MaxSnapshotChars"/>.</summary>
     [JsonIgnore]
     public int Size => (Text?.Length ?? 0) + (Title?.Length ?? 0) + (Excerpt?.Length ?? 0) + 64 + (Images?.Count ?? 0) * 64;
@@ -76,6 +84,11 @@ public static class ConversationKinds
     /// </summary>
     public const string Note = "note";
     public const string Unknown = "unknown";
+    /// <summary>
+    /// The figures of a turn (<see cref="TurnTracker"/>): <c>at</c> its start, <c>endedAt</c>, <c>tokens</c>. Not a step of
+    /// the thread: the front shows it on the CLI's state line while it works, then under the turn's answer.
+    /// </summary>
+    public const string Turn = "turn";
 }
 
 public static class ToolCategories

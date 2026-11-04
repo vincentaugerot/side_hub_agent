@@ -21,6 +21,7 @@ namespace SideHub.Agent.Conversation;
 public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<string>? imageDirectories = null) : IConversationParser
 {
     private readonly IReadOnlyCollection<string> _imageDirectories = imageDirectories ?? [];
+    private readonly TurnTracker _turn = new();
 
     /// <summary>Calls seen, by <c>tool_use</c> id, to send them again with their result.</summary>
     private readonly Dictionary<string, ConversationEvent> _calls = new(StringComparer.Ordinal);
@@ -73,7 +74,7 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
 
         var content = Prop(message, "content");
         if (content is { ValueKind: JsonValueKind.String } single)
-            return UserText(id, at, single.GetString());
+            return StartTurn(UserText(id, at, single.GetString()), at);
         if (content is not { ValueKind: JsonValueKind.Array } parts)
             return [];
 
@@ -101,6 +102,14 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         }
         if (text.Length > 0)
             events.InsertRange(0, UserText(id, at, text.ToString()));
+        return StartTurn(events, at);
+    }
+
+    /// <summary>A message of the user, or a background task's notice, starts a turn: its figures follow it.</summary>
+    private List<ConversationEvent> StartTurn(List<ConversationEvent> events, DateTime? at)
+    {
+        var start = events.FirstOrDefault(e => e.Kind == ConversationKinds.User || e is { Kind: ConversationKinds.Note, Label: "task" });
+        if (start is not null) events.Add(_turn.Start(start.Id, at));
         return events;
     }
 
@@ -231,6 +240,11 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
                     break;
             }
         }
+        // Each line of a response repeats its usage so far: counted once per response (message id)
+        var tokens = Prop(message, "usage") is { } usage && Prop(usage, "output_tokens") is { ValueKind: JsonValueKind.Number } output
+                     && output.TryGetInt64(out var count) ? count : 0;
+        if (_turn.AddResponse(Str(message, "id"), tokens, at) is { } turn)
+            events.Add(turn);
         return events;
     }
 

@@ -10,8 +10,15 @@ public class ConversationParsersTests
 {
     private const string Cwd = "/work/side_hub";
 
+    /// <summary>The steps of the thread, without the figures of the turns (tested apart).</summary>
     private static List<ConversationEvent> ParseAll(IConversationParser parser, params string[] lines) =>
-        lines.SelectMany(parser.Parse).ToList();
+        lines.SelectMany(parser.Parse).Where(e => e.Kind != ConversationKinds.Turn).ToList();
+
+    private static IEnumerable<ConversationEvent> Steps(IEnumerable<ConversationEvent> events) =>
+        events.Where(e => e.Kind != ConversationKinds.Turn);
+
+    private static List<ConversationEvent> Turns(IConversationParser parser, params string[] lines) =>
+        lines.SelectMany(parser.Parse).Where(e => e.Kind == ConversationKinds.Turn).ToList();
 
     // === Claude Code ===
 
@@ -187,14 +194,51 @@ public class ConversationParsersTests
             e => Assert.Equal("ça met <pasted_content id=\"78fc\"> dans le fil", e.Text));
     }
 
+    private static string CodexTokens(long total, string at) =>
+        "{\"timestamp\":\"" + at + "\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1,\"output_tokens\":"
+        + total + "},\"last_token_usage\":{\"output_tokens\":1}}}}";
+
+    [Fact]
+    public void Codex_Turn_CountsWhatTheSessionTotalGrewBy()
+    {
+        var turns = Turns(new CodexConversationParser(Cwd),
+            CodexTokens(200, "2026-11-04T10:00:00Z"),
+            CodexItem("""{"type":"UserMessage","id":"um-9","content":[{"type":"text","text":"Relis"}]}""").Replace("2026-11-04T07:00:39.809Z", "2026-11-04T10:00:10Z"),
+            CodexTokens(260, "2026-11-04T10:00:30Z"),
+            CodexTokens(260, "2026-11-04T10:00:31Z"),
+            CodexTokens(300, "2026-11-04T10:00:50Z"));
+
+        Assert.Equal("turn:um-9", turns[0].Id);
+        Assert.Equal(0, turns[0].Tokens);
+        Assert.Equal(100, turns[^1].Tokens);
+        Assert.Equal(new DateTime(2026, 11, 4, 10, 0, 50, DateTimeKind.Utc), turns[^1].EndedAt);
+    }
+
     [Fact]
     public void Codex_ImagesPastedFromSideHub_AreTakenOutOfTheUserText()
     {
-        var message = Assert.Single(new CodexConversationParser(Cwd, Images).Parse(CodexItem(
+        var message = Assert.Single(ParseAll(new CodexConversationParser(Cwd, Images), CodexItem(
             """{"type":"UserMessage","id":"um-2","content":[{"type":"text","text":"[Image #1: /work/side_hub/.sidehub-images/1-a.webp] Regarde"}]}""")));
 
         Assert.Equal("Regarde", message.Text);
         Assert.Equal(["1-a.webp"], message.Images);
+    }
+
+    [Fact]
+    public void Claude_Turn_CountsEachResponseOnce_FromTheUserMessage()
+    {
+        var turns = Turns(new ClaudeConversationParser(Cwd),
+            """{"type":"assistant","message":{"id":"m-0","role":"assistant","content":[{"type":"text","text":"avant"}],"usage":{"output_tokens":999}},"uuid":"a-0","timestamp":"2026-11-04T10:00:00Z"}""",
+            """{"type":"user","message":{"role":"user","content":"Corrige le test"},"uuid":"u-20","timestamp":"2026-11-04T10:00:10Z"}""",
+            """{"type":"assistant","message":{"id":"m-1","role":"assistant","content":[{"type":"thinking","thinking":""}],"usage":{"output_tokens":120}},"uuid":"a-1","timestamp":"2026-11-04T10:00:20Z"}""",
+            """{"type":"assistant","message":{"id":"m-1","role":"assistant","content":[{"type":"text","text":"Je lance les tests."}],"usage":{"output_tokens":120}},"uuid":"a-2","timestamp":"2026-11-04T10:00:21Z"}""",
+            """{"type":"assistant","message":{"id":"m-2","role":"assistant","content":[{"type":"text","text":"C'est corrigé."}],"usage":{"output_tokens":80}},"uuid":"a-3","timestamp":"2026-11-04T10:01:52Z"}""");
+
+        Assert.All(turns, t => Assert.Equal("turn:u-20", t.Id));
+        var last = turns[^1];
+        Assert.Equal(200, last.Tokens);
+        Assert.Equal(new DateTime(2026, 11, 4, 10, 0, 10, DateTimeKind.Utc), last.At);
+        Assert.Equal(new DateTime(2026, 11, 4, 10, 1, 52, DateTimeKind.Utc), last.EndedAt);
     }
 
     // === Codex ===
@@ -275,14 +319,14 @@ public class ConversationParsersTests
             File.WriteAllText(path, ClaudeUser.Replace("Ajoute un filtre par statut", "Mon jeton est s3cr3t") + "\n");
             var feed = new ConversationFeed("claude", "s", path, new ClaudeConversationParser(Cwd), t => t?.Replace("s3cr3t", "***"));
 
-            Assert.Equal("Mon jeton est ***", Assert.Single(feed.Poll()).Text);
+            Assert.Equal("Mon jeton est ***", Assert.Single(Steps(feed.Poll())).Text);
             Assert.Empty(feed.Poll());
 
             File.AppendAllText(path, ClaudeBash + "\n" + ClaudeBashResult + "\n");
-            var changed = Assert.Single(feed.Poll());
+            var changed = Assert.Single(Steps(feed.Poll()));
             Assert.Equal(ToolStatuses.Done, changed.Status);
 
-            Assert.Equal(["u-1", "toolu_1"], feed.Snapshot().Select(e => e.Id));
+            Assert.Equal(["u-1", "toolu_1"], Steps(feed.Snapshot()).Select(e => e.Id));
         }
         finally
         {
@@ -301,8 +345,10 @@ public class ConversationParsersTests
             feed.Poll();
 
             var snapshot = feed.Snapshot();
+            // Each message brings the figures of its turn: 205 messages, the last 100 with theirs
             Assert.Equal(ConversationFeed.MaxEvents, snapshot.Count);
-            Assert.Equal("u-5", snapshot[0].Id);
+            Assert.Equal("u-105", snapshot[0].Id);
+            Assert.Equal("turn:u-105", snapshot[1].Id);
         }
         finally
         {
