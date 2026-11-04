@@ -46,13 +46,23 @@ public sealed record ConversationEvent
     [JsonPropertyName("excerpt"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Excerpt { get; init; }
 
-    /// <summary>For an <see cref="ConversationKinds.Unknown"/> event: the type of what was not recognized.</summary>
+    /// <summary>
+    /// What a <see cref="ConversationKinds.Note"/> stands for (<c>interrupted</c>, <c>compacted</c>, <c>task</c>), or for an
+    /// <see cref="ConversationKinds.Unknown"/> event the type of what was not recognized.
+    /// </summary>
     [JsonPropertyName("label"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Label { get; init; }
 
+    /// <summary>
+    /// Images pasted from SideHub into a message of the user: file names in the agent's <c>.sidehub-images</c> folder, the
+    /// front asks for each one when it shows it (<c>pty.conversation.image</c>).
+    /// </summary>
+    [JsonPropertyName("images"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Images { get; init; }
+
     /// <summary>The length of its texts, to keep a snapshot within <see cref="ConversationFeed.MaxSnapshotChars"/>.</summary>
     [JsonIgnore]
-    public int Size => (Text?.Length ?? 0) + (Title?.Length ?? 0) + (Excerpt?.Length ?? 0) + 64;
+    public int Size => (Text?.Length ?? 0) + (Title?.Length ?? 0) + (Excerpt?.Length ?? 0) + 64 + (Images?.Count ?? 0) * 64;
 }
 
 public static class ConversationKinds
@@ -60,7 +70,10 @@ public static class ConversationKinds
     public const string User = "user";
     public const string Assistant = "assistant";
     public const string Tool = "tool";
-    /// <summary>A notice of the CLI in the thread: a turn interrupted, the conversation compacted (<c>label</c>).</summary>
+    /// <summary>
+    /// A notice of the CLI in the thread (<c>label</c>): a turn interrupted, the conversation compacted, a background task
+    /// that ended (<c>task</c>, its summary as text, <c>status</c> when known).
+    /// </summary>
     public const string Note = "note";
     public const string Unknown = "unknown";
 }

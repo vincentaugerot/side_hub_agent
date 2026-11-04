@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace SideHub.Agent.Conversation;
 
@@ -86,6 +87,40 @@ internal static class ConversationText
             if (text.Length > MaxExcerptLength) break;
         }
         return text.Length > 0 ? text.ToString() : null;
+    }
+
+    /// <summary>Most images kept on one message.</summary>
+    public const int MaxImages = 10;
+
+    /// <summary>What the agent pastes into the PTY for an image sent from SideHub: <c>[Image #2: /repo/.sidehub-images/x.jpg]</c>.</summary>
+    private static readonly Regex ImageReference = new(@"\[Image #\d+: ([^\]\r\n]+)\] ?", RegexOptions.CultureInvariant);
+
+    private static readonly Regex ImageName = new(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.(?:png|jpe?g|webp)$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>A plain image file name of the attachments folder (no folder, no <c>..</c>).</summary>
+    public static bool IsImageName(string? name) => name is not null && ImageName.IsMatch(name) && !name.Contains("..", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The images sent from SideHub into a message (references to a file of one of <paramref name="imageDirectories"/>),
+    /// taken out of its text: the text without them, and their file names (null when there is none). Other references
+    /// stay in the text as written.
+    /// </summary>
+    public static (string Text, IReadOnlyList<string>? Images) TakeImages(string text, IReadOnlyCollection<string> imageDirectories)
+    {
+        if (imageDirectories.Count == 0 || !text.Contains("[Image #", StringComparison.Ordinal)) return (text, null);
+        List<string>? images = null;
+        var rest = ImageReference.Replace(text, match =>
+        {
+            var path = match.Groups[1].Value.Trim();
+            var name = Path.GetFileName(path);
+            var folder = Path.GetDirectoryName(path);
+            if (folder is null || !imageDirectories.Contains(folder) || !IsImageName(name) || images?.Count >= MaxImages)
+                return match.Value;
+            (images ??= []).Add(name);
+            return "";
+        });
+        return images is null ? (text, null) : (rest.Trim(), images);
     }
 
     /// <summary>An edit as a few diff lines: the old text with <c>-</c>, the new one with <c>+</c>.</summary>

@@ -135,6 +135,56 @@ public class ConversationParsersTests
         Assert.Empty(parser.TakeUnrecognized());
     }
 
+    private static readonly string[] Images = ["/work/side_hub/.sidehub-images"];
+
+    [Fact]
+    public void Claude_TaskNotification_IsANoteWithItsSummaryAndStatus()
+    {
+        var events = ParseAll(new ClaudeConversationParser(Cwd),
+            """{"type":"user","promptSource":"system","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"Run tests\" completed (exit code 0)</summary>\n</task-notification>"},"uuid":"u-7"}""",
+            """{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b2</task-id>\n<summary>Monitor event: \"probe\"</summary>\n<event>[Monitor expired]</event>\n</task-notification>"},"uuid":"u-8"}""",
+            """{"type":"user","message":{"role":"user","content":"<task-notification>\n<status>killed</status>\n<event>stopped</event>\n</task-notification>"},"uuid":"u-9"}""");
+
+        Assert.Collection(events,
+            e =>
+            {
+                Assert.Equal(ConversationKinds.Note, e.Kind);
+                Assert.Equal("task", e.Label);
+                Assert.Equal("Background command \"Run tests\" completed (exit code 0)", e.Text);
+                Assert.Equal(ToolStatuses.Done, e.Status);
+            },
+            e => { Assert.Equal("Monitor event: \"probe\"", e.Text); Assert.Null(e.Status); },
+            e => { Assert.Equal("stopped", e.Text); Assert.Equal(ToolStatuses.Failed, e.Status); });
+    }
+
+    [Fact]
+    public void Claude_ImagesPastedFromSideHub_AreTakenOutOfTheText()
+    {
+        var events = ParseAll(new ClaudeConversationParser(Cwd, Images),
+            """{"type":"user","message":{"role":"user","content":"[Image #1: /work/side_hub/.sidehub-images/17937-ab.jpg] [Image #2: /work/side_hub/.sidehub-images/17938-cd.png] Le champ est compressé"},"uuid":"u-10"}""",
+            """{"type":"user","message":{"role":"user","content":"[Image #3: /work/side_hub/.sidehub-images/17939-ef.jpg] "},"uuid":"u-11"}""",
+            """{"type":"user","message":{"role":"user","content":"[Image #4: /etc/passwd.jpg] [Image #5: /work/side_hub/.sidehub-images/../x.jpg] ailleurs"},"uuid":"u-12"}""");
+
+        Assert.Collection(events,
+            e =>
+            {
+                Assert.Equal("Le champ est compressé", e.Text);
+                Assert.Equal(["17937-ab.jpg", "17938-cd.png"], e.Images);
+            },
+            e => { Assert.Null(e.Text); Assert.Equal(["17939-ef.jpg"], e.Images); },
+            e => { Assert.Null(e.Images); Assert.StartsWith("[Image #4: /etc/passwd.jpg]", e.Text); });
+    }
+
+    [Fact]
+    public void Codex_ImagesPastedFromSideHub_AreTakenOutOfTheUserText()
+    {
+        var message = Assert.Single(new CodexConversationParser(Cwd, Images).Parse(CodexItem(
+            """{"type":"UserMessage","id":"um-2","content":[{"type":"text","text":"[Image #1: /work/side_hub/.sidehub-images/1-a.webp] Regarde"}]}""")));
+
+        Assert.Equal("Regarde", message.Text);
+        Assert.Equal(["1-a.webp"], message.Images);
+    }
+
     // === Codex ===
 
     private static string CodexItem(string item, string kind = "item_completed") =>

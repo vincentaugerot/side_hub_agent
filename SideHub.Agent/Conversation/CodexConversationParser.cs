@@ -17,8 +17,12 @@ namespace SideHub.Agent.Conversation;
 /// The <c>response_item</c> lines say the same for the model (with the injected instructions): not read. An item of a
 /// type this parser does not know becomes an <see cref="ConversationKinds.Unknown"/> event.
 /// </summary>
-public sealed class CodexConversationParser(string cwd) : IConversationParser
+/// <param name="imageDirectories">Folders of the images pasted from SideHub (<c>.sidehub-images</c>): a reference to one of
+/// their files in a message of the user becomes an image of it.</param>
+public sealed class CodexConversationParser(string cwd, IReadOnlyCollection<string>? imageDirectories = null) : IConversationParser
 {
+    private readonly IReadOnlyCollection<string> _imageDirectories = imageDirectories ?? [];
+
     private readonly HashSet<string> _unrecognized = new(StringComparer.Ordinal);
     private readonly List<string> _newUnrecognized = [];
 
@@ -89,7 +93,7 @@ public sealed class CodexConversationParser(string cwd) : IConversationParser
         }
     }
 
-    private static ConversationEvent? Message(string id, string kind, DateTime? at, JsonElement? content)
+    private ConversationEvent? Message(string id, string kind, DateTime? at, JsonElement? content)
     {
         if (content is not { ValueKind: JsonValueKind.Array } parts) return null;
         var text = new StringBuilder();
@@ -104,9 +108,12 @@ public sealed class CodexConversationParser(string cwd) : IConversationParser
             if (string.IsNullOrEmpty(piece)) continue;
             text.Append(text.Length > 0 ? "\n\n" : "").Append(piece);
         }
-        return string.IsNullOrWhiteSpace(text.ToString())
-            ? null
-            : new ConversationEvent { Id = id, Kind = kind, At = at, Text = Head(text.ToString().Trim(), MaxTextLength) };
+        var (rest, images) = kind == ConversationKinds.User ? TakeImages(text.ToString(), _imageDirectories) : (text.ToString(), null);
+        if (string.IsNullOrWhiteSpace(rest) && images is null) return null;
+        return new ConversationEvent
+        {
+            Id = id, Kind = kind, At = at, Text = string.IsNullOrWhiteSpace(rest) ? null : Head(rest.Trim(), MaxTextLength), Images = images,
+        };
     }
 
     private ConversationEvent Command(JsonElement item, string id, DateTime? at, bool started)

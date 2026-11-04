@@ -86,11 +86,14 @@ public sealed class ConversationFeed
         Excerpt = ConversationText.Cap(_mask(e.Excerpt), ConversationText.MaxExcerptLength),
     };
 
-    /// <summary>The parser of a CLI's transcript, null for a CLI without Conversation mode.</summary>
-    public static IConversationParser? ParserFor(string provider, string cwd) => provider switch
+    /// <summary>
+    /// The parser of a CLI's transcript, null for a CLI without Conversation mode. <paramref name="imageDirectories"/>: the
+    /// folders of the images pasted from SideHub, as written in the PTY.
+    /// </summary>
+    public static IConversationParser? ParserFor(string provider, string cwd, IReadOnlyCollection<string>? imageDirectories = null) => provider switch
     {
-        "claude" => new ClaudeConversationParser(cwd),
-        "codex" => new CodexConversationParser(cwd),
+        "claude" => new ClaudeConversationParser(cwd, imageDirectories),
+        "codex" => new CodexConversationParser(cwd, imageDirectories),
         _ => null,
     };
 }

@@ -15,8 +15,12 @@ namespace SideHub.Agent.Conversation;
 /// Lines of sub-agents (<c>isSidechain</c>) and injected context (<c>isMeta</c>) are left out. A content part of a type
 /// this parser does not know becomes an <see cref="ConversationKinds.Unknown"/> event.
 /// </summary>
-public sealed class ClaudeConversationParser(string cwd) : IConversationParser
+/// <param name="imageDirectories">Folders of the images pasted from SideHub (<c>.sidehub-images</c>): a reference to one of
+/// their files becomes an image of the message.</param>
+public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<string>? imageDirectories = null) : IConversationParser
 {
+    private readonly IReadOnlyCollection<string> _imageDirectories = imageDirectories ?? [];
+
     /// <summary>Calls seen, by <c>tool_use</c> id, to send them again with their result.</summary>
     private readonly Dictionary<string, ConversationEvent> _calls = new(StringComparer.Ordinal);
     private readonly HashSet<string> _unrecognized = new(StringComparer.Ordinal);
@@ -99,8 +103,8 @@ public sealed class ClaudeConversationParser(string cwd) : IConversationParser
         return events;
     }
 
-    /// <summary>The user's text, or the notice it stands for: a slash command typed, a turn interrupted.</summary>
-    private static List<ConversationEvent> UserText(string id, DateTime? at, string? text)
+    /// <summary>The user's text, or the notice it stands for: a slash command typed, a turn interrupted, a background task ended.</summary>
+    private List<ConversationEvent> UserText(string id, DateTime? at, string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
         var trimmed = text.Trim();
@@ -121,7 +125,41 @@ public sealed class ClaudeConversationParser(string cwd) : IConversationParser
         if (trimmed.StartsWith("<local-command-", StringComparison.Ordinal) || trimmed.StartsWith("<bash-std", StringComparison.Ordinal)
             || trimmed.StartsWith("<system-reminder>", StringComparison.Ordinal))
             return [];
-        return [new ConversationEvent { Id = id, Kind = ConversationKinds.User, At = at, Text = Head(text, MaxTextLength) }];
+        if (trimmed.StartsWith("<task-notification>", StringComparison.Ordinal))
+            return TaskNotifications(id, at, trimmed);
+        var (rest, images) = TakeImages(text, _imageDirectories);
+        if (string.IsNullOrWhiteSpace(rest) && images is null) return [];
+        return [new ConversationEvent
+        {
+            Id = id, Kind = ConversationKinds.User, At = at, Text = string.IsNullOrWhiteSpace(rest) ? null : Head(rest, MaxTextLength), Images = images,
+        }];
+    }
+
+    /// <summary>
+    /// What Claude Code tells the session when a background task ends (a command, a monitor, a sub-agent), sent as a user
+    /// turn: <c>&lt;task-notification&gt;</c> blocks with a <c>summary</c> (or an <c>event</c>) and a <c>status</c>. One note each.
+    /// </summary>
+    private static List<ConversationEvent> TaskNotifications(string id, DateTime? at, string text)
+    {
+        var notes = new List<ConversationEvent>();
+        foreach (var block in text.Split("</task-notification>", StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (Tag(block + "</task-notification>", "task-notification") is not { } body) continue;
+            var summary = Tag(body, "summary") ?? Tag(body, "event");
+            if (string.IsNullOrWhiteSpace(summary)) continue;
+            var status = Tag(body, "status")?.ToLowerInvariant() switch
+            {
+                "completed" => ToolStatuses.Done,
+                "failed" or "killed" or "error" or "timeout" => ToolStatuses.Failed,
+                _ => null,
+            };
+            notes.Add(new ConversationEvent
+            {
+                Id = notes.Count == 0 ? id : $"{id}:{notes.Count}", Kind = ConversationKinds.Note, At = at, Label = "task",
+                Text = Head(summary, MaxTitleLength), Status = status,
+            });
+        }
+        return notes;
     }
 
     private static string? Tag(string text, string name)

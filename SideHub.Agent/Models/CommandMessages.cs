@@ -113,6 +113,10 @@ public class IncomingMessage
     public string? WorkingDirectory { get; init; }
 
     /// <summary><c>pty.conversation.watch</c>: whether someone looks at the PTY in Conversation mode (doc 69).</summary>
+    /// <summary>Image of a conversation asked by a viewer (<c>pty.conversation.image</c>): a file name in the attachments folder.</summary>
+    [JsonPropertyName("image")]
+    public string? Image { get; init; }
+
     [JsonPropertyName("on")]
     public bool? On { get; init; }
 
@@ -432,6 +436,33 @@ public class PtyConversationMessage
 
     [JsonPropertyName("events")]
     public required IReadOnlyList<SideHub.Agent.Conversation.ConversationEvent> Events { get; init; }
+}
+
+/// <summary>
+/// An image of a message of the conversation, asked by a viewer of the PTY (<c>pty.conversation.image</c>, doc 69): the
+/// file of the attachments folder as base64, or <see cref="Error"/>. Relayed to the PTY's viewers, never stored.
+/// </summary>
+public class PtyConversationImageMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.conversation.image";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    /// <summary>File name in the attachments folder, as in the event's <c>images</c>.</summary>
+    [JsonPropertyName("image")]
+    public required string Image { get; init; }
+
+    [JsonPropertyName("mimeType"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MimeType { get; init; }
+
+    [JsonPropertyName("data"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Data { get; init; }
+
+    /// <summary><c>not-found</c>, <c>too-large</c>, <c>invalid</c>, <c>no-pty</c>.</summary>
+    [JsonPropertyName("error"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; init; }
 }
 
 /// <summary>

@@ -872,7 +872,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     {
         if (!_ptyCwd.TryGetValue(ptySessionId, out var cwd)
             || !_lastMessageReaders.TryGetValue(session.Provider, out var reader)
-            || ConversationFeed.ParserFor(session.Provider, cwd) is not { } parser
+            || ConversationFeed.ParserFor(session.Provider, cwd, ConversationImageDirectories()) is not { } parser
             || reader.SessionFiles(cwd, session.CliSessionId).FirstOrDefault() is not { } path
             || !File.Exists(path))
             return null;
@@ -880,6 +880,65 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             text is not null && _ptySecrets.TryGetValue(ptySessionId, out var secrets) && SecretMasker.For(secrets.Env, secrets.Keys) is { } masker
                 ? masker.Process(text) + masker.Flush()
                 : text);
+    }
+
+    /// <summary>Largest image of a conversation sent to its viewers (an attachment is at most 5 MB once decoded).</summary>
+    private const long MaxConversationImageBytes = 6 * 1024 * 1024;
+
+    /// <summary>The attachments folder as the agent writes it in the PTY (<c>[Image #n: path]</c>), and as configured.</summary>
+    private IReadOnlyCollection<string> ConversationImageDirectories()
+    {
+        var folders = new HashSet<string>(StringComparer.Ordinal) { Path.Combine(Path.GetFullPath(_workingDirectory), AttachmentsDirectory) };
+        try { folders.Add(Path.Combine(PathConfinement.RealPath(_workingDirectory), AttachmentsDirectory)); }
+        catch (IOException) { /* the configured path stays */ }
+        return folders;
+    }
+
+    /// <summary>
+    /// An image of a message, asked by a viewer of the PTY in Conversation mode (doc 69): a file of the attachments folder
+    /// (<c>.sidehub-images</c>, plain name, read without following links), sent back as base64, or why not. Nothing else
+    /// of the disk can be read this way.
+    /// </summary>
+    private async Task HandleConversationImageAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (message.PtySessionId is not { Length: > 0 } ptySessionId || message.Image is not { Length: > 0 } name) return;
+        string? data = null, mimeType = null, error = null;
+        if (!_ptySessions.ContainsKey(ptySessionId))
+            error = "no-pty";
+        else if (!ConversationText.IsImageName(name))
+            error = "invalid";
+        else
+        {
+            try
+            {
+                await using var file = ConfinedFile.Open(_workingDirectory, Path.Combine(AttachmentsDirectory, name), FileMode.Open, FileAccess.Read);
+                if (file.Length > MaxConversationImageBytes)
+                    error = "too-large";
+                else
+                {
+                    var bytes = new byte[file.Length];
+                    await file.ReadExactlyAsync(bytes, ct);
+                    data = Convert.ToBase64String(bytes);
+                    mimeType = Path.GetExtension(name).ToLowerInvariant() switch
+                    {
+                        ".png" => "image/png",
+                        ".webp" => "image/webp",
+                        _ => "image/jpeg",
+                    };
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                error = "not-found";
+            }
+        }
+        Log(error is null
+            ? $"Conversation image {name} of PTY {ptySessionId} sent ({data!.Length} base64 chars)"
+            : $"Conversation image {name} of PTY {ptySessionId} not sent: {error}");
+        await TrySendAsync(new PtyConversationImageMessage
+        {
+            PtySessionId = ptySessionId, Image = name, MimeType = mimeType, Data = data, Error = error,
+        }, ct);
     }
 
     /// <summary>agy titles a conversation once its first turn ended: sent once, like claude's ai-title.</summary>
@@ -1532,6 +1591,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "pty.conversation.watch":
                     HandleConversationWatch(message, ct);
+                    break;
+                case "pty.conversation.image":
+                    RunInBackground("conversation-image", () => HandleConversationImageAsync(message, ct));
                     break;
                 case "review.round-start":
                     RunInBackground("review.round-start", () => HandleReviewRoundStartAsync(message, ct));
