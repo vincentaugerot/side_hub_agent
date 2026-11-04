@@ -176,6 +176,18 @@ public class ConversationParsersTests
     }
 
     [Fact]
+    public void Claude_PastedBlock_ShowsAsTheUserWroteIt()
+    {
+        var events = ParseAll(new ClaudeConversationParser(Cwd),
+            """{"type":"user","message":{"role":"user","content":"\n\n<pasted_content id=\"78fc\">\nPremière ligne\nDeuxième ligne\n</pasted_content id=\"78fc\">\n"},"uuid":"u-13"}""",
+            """{"type":"user","message":{"role":"user","content":"ça met <\\pasted_content id=\"78fc\"> dans le fil"},"uuid":"u-14"}""");
+
+        Assert.Collection(events,
+            e => Assert.Equal("Première ligne\nDeuxième ligne", e.Text),
+            e => Assert.Equal("ça met <pasted_content id=\"78fc\"> dans le fil", e.Text));
+    }
+
+    [Fact]
     public void Codex_ImagesPastedFromSideHub_AreTakenOutOfTheUserText()
     {
         var message = Assert.Single(new CodexConversationParser(Cwd, Images).Parse(CodexItem(

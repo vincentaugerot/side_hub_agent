@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using static SideHub.Agent.Conversation.ConversationText;
 
 namespace SideHub.Agent.Conversation;
@@ -127,12 +128,27 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             return [];
         if (trimmed.StartsWith("<task-notification>", StringComparison.Ordinal))
             return TaskNotifications(id, at, trimmed);
-        var (rest, images) = TakeImages(text, _imageDirectories);
+        var (rest, images) = TakeImages(Unpasted(text), _imageDirectories);
         if (string.IsNullOrWhiteSpace(rest) && images is null) return [];
         return [new ConversationEvent
         {
-            Id = id, Kind = ConversationKinds.User, At = at, Text = string.IsNullOrWhiteSpace(rest) ? null : Head(rest, MaxTextLength), Images = images,
+            Id = id, Kind = ConversationKinds.User, At = at, Text = string.IsNullOrWhiteSpace(rest) ? null : Head(rest.Trim(), MaxTextLength), Images = images,
         }];
+    }
+
+    private static readonly Regex PastedOpen = new(@"<pasted_content id=""[^""\r\n]*"">\r?\n?", RegexOptions.CultureInvariant);
+    private static readonly Regex PastedClose = new(@"\r?\n?</pasted_content(?: id=""[^""\r\n]*"")?>", RegexOptions.CultureInvariant);
+    private static readonly Regex PastedEscaped = new(@"<(/?)\\(/?)pasted_content", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The message as the user wrote it: Claude Code puts a pasted block between <c>&lt;pasted_content id="…"&gt;</c> and
+    /// <c>&lt;/pasted_content id="…"&gt;</c>, and escapes the same tag typed by hand (<c>&lt;\pasted_content</c>).
+    /// </summary>
+    internal static string Unpasted(string text)
+    {
+        if (!text.Contains("pasted_content", StringComparison.Ordinal)) return text;
+        var unwrapped = PastedClose.Replace(PastedOpen.Replace(text, ""), "");
+        return PastedEscaped.Replace(unwrapped, "<$1$2pasted_content");
     }
 
     /// <summary>
