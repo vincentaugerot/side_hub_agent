@@ -60,6 +60,13 @@ public sealed record ConversationEvent
     [JsonPropertyName("images"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Images { get; init; }
 
+    /// <summary>
+    /// A tool call that goes on in the background (a command, a monitor, a sub-agent launched in the background): it stays
+    /// <see cref="ToolStatuses.Running"/> once launched, until the CLI says it ended.
+    /// </summary>
+    [JsonPropertyName("background"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Background { get; init; }
+
     /// <summary>For a <see cref="ConversationKinds.Turn"/>: when the CLI last wrote in it (UTC).</summary>
     [JsonPropertyName("endedAt"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? EndedAt { get; init; }

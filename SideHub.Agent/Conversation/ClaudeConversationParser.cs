@@ -22,6 +22,8 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
 {
     private readonly IReadOnlyCollection<string> _imageDirectories = imageDirectories ?? [];
     private readonly TurnTracker _turn = new();
+    /// <summary>Background tasks launched, by the CLI's task id (what a monitor's notices name), to their call.</summary>
+    private readonly Dictionary<string, string> _backgroundTasks = new(StringComparer.Ordinal);
 
     /// <summary>Calls seen, by <c>tool_use</c> id, to send them again with their result.</summary>
     private readonly Dictionary<string, ConversationEvent> _calls = new(StringComparer.Ordinal);
@@ -36,6 +38,10 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
 
     public IReadOnlyList<ConversationEvent> Parse(string line)
     {
+        // A background task that ends while Claude works is only queued (then absorbed into the turn): its call ends here
+        if ((line.Contains("\"queue-operation\"", StringComparison.Ordinal) || line.Contains("\"queued_command\"", StringComparison.Ordinal))
+            && line.Contains("task-notification", StringComparison.Ordinal))
+            return QueuedNotification(line);
         // Most lines are metadata: only user and assistant lines are parsed
         if (!line.Contains("\"type\":\"user\"", StringComparison.Ordinal) && !line.Contains("\"type\":\"assistant\"", StringComparison.Ordinal))
             return [];
@@ -145,6 +151,15 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         }];
     }
 
+    /// <summary>
+    /// The result of a launch in the background, from its first words (any output may quote them further on), with the
+    /// task id its notices give: a command (« Command running in background with ID: b1x »), a monitor (« Monitor started
+    /// (task b2y, »), a sub-agent (« Async agent launched successfully. … » then « agentId: a3z » on the next line).
+    /// </summary>
+    private static readonly Regex BackgroundTask = new(
+        @"\A(?:Command running in background with ID: (?<id>[A-Za-z0-9_-]+)|Monitor started \(task (?<id>[A-Za-z0-9_-]+)|Async agent launched successfully\.[^\n]*\nagentId: (?<id>[A-Za-z0-9_-]+))",
+        RegexOptions.CultureInvariant);
+
     private static readonly Regex PastedOpen = new(@"<pasted_content id=""[^""\r\n]*"">\r?\n?", RegexOptions.CultureInvariant);
     private static readonly Regex PastedClose = new(@"\r?\n?</pasted_content(?: id=""[^""\r\n]*"")?>", RegexOptions.CultureInvariant);
     private static readonly Regex PastedEscaped = new(@"<(/?)\\(/?)pasted_content", RegexOptions.CultureInvariant);
@@ -161,30 +176,85 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
     }
 
     /// <summary>
-    /// What Claude Code tells the session when a background task ends (a command, a monitor, a sub-agent), sent as a user
-    /// turn: <c>&lt;task-notification&gt;</c> blocks with a <c>summary</c> (or an <c>event</c>) and a <c>status</c>. One note each.
+    /// <c>{"type":"queue-operation","operation":"enqueue","content":"&lt;task-notification&gt;…"}</c> (or, in older
+    /// transcripts, <c>{"type":"attachment","attachment":{"type":"queued_command","prompt":…}}</c>): the notice of a
+    /// background task, queued while Claude works. It may never come as a user line (absorbed into the turn), so the
+    /// task's call ends here; the note is left to the user line, when there is one.
     /// </summary>
-    private static List<ConversationEvent> TaskNotifications(string id, DateTime? at, string text)
+    private List<ConversationEvent> QueuedNotification(string line)
     {
-        var notes = new List<ConversationEvent>();
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var content = Str(root, "type") switch
+            {
+                "queue-operation" when Str(root, "operation") == "enqueue" => Str(root, "content"),
+                "attachment" when Prop(root, "attachment") is { } attachment && Str(attachment, "type") == "queued_command" => Str(attachment, "prompt"),
+                _ => null,
+            };
+            return content is not null && content.TrimStart().StartsWith("<task-notification>", StringComparison.Ordinal)
+                ? TaskNotifications("", Timestamp(root), content.Trim(), notes: false)
+                : [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// What Claude Code tells the session about a background task (a command, a monitor, a sub-agent), sent as a user turn:
+    /// <c>&lt;task-notification&gt;</c> blocks with the task's ids (<c>tool-use-id</c>, or only <c>task-id</c> for a monitor),
+    /// a <c>summary</c>, an <c>event</c> and a <c>status</c>. The call that launched the task ends with it (done, or failed),
+    /// and a note says so. A monitor sends each of its events this way: they update its call, no note, until
+    /// « [Monitor expired … ».
+    /// </summary>
+    private List<ConversationEvent> TaskNotifications(string id, DateTime? at, string text, bool notes = true)
+    {
+        var events = new List<ConversationEvent>();
+        var noteCount = 0;
         foreach (var block in text.Split("</task-notification>", StringSplitOptions.RemoveEmptyEntries))
         {
             if (Tag(block + "</task-notification>", "task-notification") is not { } body) continue;
-            var summary = Tag(body, "summary") ?? Tag(body, "event");
-            if (string.IsNullOrWhiteSpace(summary)) continue;
-            var status = Tag(body, "status")?.ToLowerInvariant() switch
+            var reported = Tag(body, "status")?.ToLowerInvariant();
+            var status = reported switch
             {
                 "completed" => ToolStatuses.Done,
-                "failed" or "killed" or "error" or "timeout" => ToolStatuses.Failed,
+                "failed" or "killed" or "error" or "timeout" or "stopped" => ToolStatuses.Failed,
                 _ => null,
             };
-            notes.Add(new ConversationEvent
+            var summary = Tag(body, "summary");
+            var happened = Tag(body, "event");
+            var callId = Tag(body, "tool-use-id")
+                         ?? (Tag(body, "task-id") is { } taskId && _backgroundTasks.TryGetValue(taskId, out var launched) ? launched : null);
+            var call = callId is not null && _calls.TryGetValue(callId, out var known) && known.Background == true ? known : null;
+            // A task that ended stays so: a monitor's event can come after the notice that it expired
+            if (call is not null && call.Status != ToolStatuses.Running) continue;
+            var ended = reported is not null || call?.Tool != "Monitor"
+                        || (happened?.StartsWith("[Monitor", StringComparison.Ordinal) == true
+                            && (happened.Contains("expired", StringComparison.Ordinal) || happened.Contains("ended", StringComparison.Ordinal)
+                                || happened.Contains("stopped", StringComparison.Ordinal)));
+            if (call is not null)
             {
-                Id = notes.Count == 0 ? id : $"{id}:{notes.Count}", Kind = ConversationKinds.Note, At = at, Label = "task",
-                Text = Head(summary, MaxTitleLength), Status = status,
+                var updated = call with
+                {
+                    Status = ended ? status ?? ToolStatuses.Done : ToolStatuses.Running,
+                    Excerpt = Head(happened ?? summary ?? call.Excerpt, MaxExcerptLength),
+                };
+                _calls[call.Id] = updated;
+                events.Add(updated);
+                if (!ended) continue;
+            }
+            var said = summary ?? happened;
+            if (!notes || string.IsNullOrWhiteSpace(said)) continue;
+            events.Add(new ConversationEvent
+            {
+                Id = noteCount++ == 0 ? id : $"{id}:{noteCount - 1}", Kind = ConversationKinds.Note, At = at, Label = "task",
+                Text = Head(said, MaxTitleLength), Status = status,
             });
         }
-        return notes;
+        return events;
     }
 
     private static string? Tag(string text, string name)
@@ -203,9 +273,19 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             return null;
         var failed = True(part, "is_error");
         var output = ResultText(Prop(part, "content"));
+        // Launched in the background (asked so, or moved there): it goes on until its notice (TaskNotifications)
+        var taskId = output is null ? null : BackgroundTask.Match(output) is { Success: true } m ? m.Groups["id"].Value : null;
+        if (!failed && (call.Background == true || taskId is not null))
+        {
+            if (taskId is not null) _backgroundTasks[taskId] = callId;
+            var launched = call with { Status = ToolStatuses.Running, Background = true, Excerpt = Head(output ?? call.Excerpt, MaxExcerptLength) };
+            _calls[callId] = launched;
+            return launched;
+        }
         var updated = call with
         {
             Status = failed ? ToolStatuses.Failed : ToolStatuses.Done,
+            Background = call.Background == true ? false : null,
             // An edit keeps its diff; any other tool shows the start of what it returned, a failure always its error
             Excerpt = Head(failed || call.Category != ToolCategories.Edit || call.Excerpt is null ? output ?? call.Excerpt : call.Excerpt, MaxExcerptLength),
         };
@@ -231,7 +311,10 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
                 case "tool_use":
                 case "server_tool_use":
                     if (ToolCall(part, at) is { } call)
+                    {
                         events.Add(call);
+                        if (Stopped(call.Tool, Prop(part, "input") ?? default) is { } stopped) events.Add(stopped);
+                    }
                     break;
                 case { } type when SkippedParts.Contains(type):
                     break;
@@ -254,18 +337,33 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             return null;
         var input = Prop(part, "input") ?? default;
         var (category, title, excerpt) = Describe(name, input);
+        var background = name == "Monitor" || True(input, "run_in_background");
         var call = new ConversationEvent
         {
             Id = callId, Kind = ConversationKinds.Tool, At = at, Tool = name, Category = category,
             Title = Head(title, MaxTitleLength), Excerpt = Head(excerpt, MaxExcerptLength),
             // A server tool (web search) runs on Anthropic's side: its result comes in the same message
             Status = Str(part, "type") == "server_tool_use" ? ToolStatuses.Done : ToolStatuses.Running,
+            Background = background ? true : null,
         };
         // A call written again (same id) keeps the result it already has
-        if (_calls.TryGetValue(callId, out var known) && known.Status != ToolStatuses.Running)
-            call = call with { Status = known.Status, Excerpt = known.Excerpt };
+        if (_calls.TryGetValue(callId, out var known) && (known.Status != ToolStatuses.Running || known.Background == true))
+            call = call with { Status = known.Status, Excerpt = known.Excerpt, Background = known.Background };
         _calls[callId] = call;
         return call;
+    }
+
+    /// <summary>Claude stops a background task itself (<c>TaskStop</c>, <c>KillShell</c> before it): the task's call ends.</summary>
+    private ConversationEvent? Stopped(string? tool, JsonElement input)
+    {
+        if (tool is not ("TaskStop" or "KillShell" or "KillBash")
+            || (Str(input, "task_id") ?? Str(input, "shell_id")) is not { } taskId
+            || !_backgroundTasks.TryGetValue(taskId, out var callId)
+            || !_calls.TryGetValue(callId, out var call) || call.Status != ToolStatuses.Running)
+            return null;
+        var stopped = call with { Status = ToolStatuses.Done };
+        _calls[callId] = stopped;
+        return stopped;
     }
 
     /// <summary>What a Claude Code tool does, what it works on, and for an edit its diff.</summary>
@@ -309,6 +407,8 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             case "WebSearch":
             case "web_search":
                 return (ToolCategories.Web, Str(input, "query"), null);
+            case "Monitor":
+                return (ToolCategories.Run, FirstLine(Str(input, "description") ?? Str(input, "command")), null);
             case "Task":
             case "Agent":
                 return (ToolCategories.Task, FirstLine(Str(input, "description") ?? Str(input, "prompt")), null);

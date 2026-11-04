@@ -164,6 +164,92 @@ public class ConversationParsersTests
             e => { Assert.Equal("stopped", e.Text); Assert.Equal(ToolStatuses.Failed, e.Status); });
     }
 
+    private static string ClaudeToolUse(string id, string name, string input) =>
+        $$$"""{"type":"assistant","message":{"id":"m-{{{id}}}","role":"assistant","content":[{"type":"tool_use","id":"{{{id}}}","name":"{{{name}}}","input":{{{input}}}}]},"uuid":"a-{{{id}}}"}""";
+
+    private static string ClaudeResult(string id, string text) =>
+        $$$"""{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"{{{id}}}","content":"{{{text}}}","is_error":false}]},"uuid":"r-{{{id}}}"}""";
+
+    private static string ClaudeNotice(string uuid, string body) =>
+        $$$"""{"type":"user","message":{"role":"user","content":"<task-notification>\n{{{body}}}\n</task-notification>"},"uuid":"{{{uuid}}}"}""";
+
+    [Fact]
+    public void Claude_BackgroundCommand_RunsUntilItsNotice()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        parser.Parse(ClaudeToolUse("toolu_bg", "Bash", """{"command":"npm run build","run_in_background":true}"""));
+
+        var launched = Assert.Single(parser.Parse(ClaudeResult("toolu_bg", "Command running in background with ID: b1x. Output is being written to: /tmp/b1x.output")));
+        Assert.Equal(ToolStatuses.Running, launched.Status);
+        Assert.True(launched.Background);
+
+        var ended = ParseAll(parser, ClaudeNotice("u-30",
+            """<task-id>b1x</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<summary>Background command \"npm run build\" completed (exit code 0)</summary>"""));
+        Assert.Collection(ended,
+            e => { Assert.Equal("toolu_bg", e.Id); Assert.Equal(ToolStatuses.Done, e.Status); },
+            e => { Assert.Equal(ConversationKinds.Note, e.Kind); Assert.Equal("task", e.Label); });
+    }
+
+    [Fact]
+    public void Claude_BackgroundCommand_EndsOnANoticeQueuedWhileClaudeWorks()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        parser.Parse(ClaudeToolUse("toolu_q", "Bash", """{"command":"npm test","run_in_background":true}"""));
+        parser.Parse(ClaudeResult("toolu_q", "Command running in background with ID: q1. Output is being written to: /tmp/q1.output"));
+
+        var queued = Assert.Single(parser.Parse(
+            """{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-04T10:00:00.000Z","content":"<task-notification>\n<task-id>q1</task-id>\n<tool-use-id>toolu_q</tool-use-id>\n<status>failed</status>\n<summary>Background command \"npm test\" failed with exit code 1</summary>\n</task-notification>"}"""));
+        Assert.Equal("toolu_q", queued.Id);
+        Assert.Equal(ToolStatuses.Failed, queued.Status);
+
+        // A message queued by the user is not a notice
+        Assert.Empty(parser.Parse("""{"type":"queue-operation","operation":"enqueue","content":"et aussi le README"}"""));
+    }
+
+    [Fact]
+    public void Claude_BackgroundTask_EndsWhenClaudeStopsIt_OrOnAnOlderQueuedAttachment()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        parser.Parse(ClaudeToolUse("toolu_srv", "Bash", """{"command":"npx ng serve","run_in_background":true}"""));
+        parser.Parse(ClaudeResult("toolu_srv", "Command running in background with ID: s1. Output is being written to: /tmp/s1.output"));
+        parser.Parse(ClaudeToolUse("toolu_t", "Bash", """{"command":"npm test","run_in_background":true}"""));
+        parser.Parse(ClaudeResult("toolu_t", "Command running in background with ID: t1. Output is being written to: /tmp/t1.output"));
+
+        var stop = parser.Parse(ClaudeToolUse("toolu_stop", "TaskStop", """{"task_id":"s1"}"""));
+        Assert.Contains(stop, e => e.Id == "toolu_srv" && e.Status == ToolStatuses.Done);
+
+        var queued = Assert.Single(parser.Parse(
+            """{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>toolu_t</tool-use-id>\n<status>completed</status>\n<summary>Background command \"npm test\" completed (exit code 0)</summary>\n</task-notification>"}}"""));
+        Assert.Equal("toolu_t", queued.Id);
+        Assert.Equal(ToolStatuses.Done, queued.Status);
+    }
+
+    [Fact]
+    public void Claude_Monitor_ItsEventsUpdateItsCall_UntilItExpires()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        parser.Parse(ClaudeToolUse("toolu_mon", "Monitor", """{"command":"tail -f probe.log","description":"Probe progress"}"""));
+        var launched = Assert.Single(parser.Parse(ClaudeResult("toolu_mon", "Monitor started (task m7q, expires in 30m unless the source ends first)")));
+        Assert.Equal("Probe progress", launched.Title);
+        Assert.Equal(ToolStatuses.Running, launched.Status);
+
+        var update = Assert.Single(ParseAll(parser, ClaudeNotice("u-31",
+            """<task-id>m7q</task-id>\n<summary>Monitor event: \"Probe progress\"</summary>\n<event>step 2 of 5</event>""")));
+        Assert.Equal("toolu_mon", update.Id);
+        Assert.Equal(ToolStatuses.Running, update.Status);
+        Assert.Equal("step 2 of 5", update.Excerpt);
+
+        var expired = ParseAll(parser, ClaudeNotice("u-32",
+            """<task-id>m7q</task-id>\n<summary>Monitor event: \"Probe progress\"</summary>\n<event>[Monitor expired after 30m with 4 events delivered.]</event>"""));
+        Assert.Collection(expired,
+            e => { Assert.Equal("toolu_mon", e.Id); Assert.Equal(ToolStatuses.Done, e.Status); },
+            e => Assert.Equal(ConversationKinds.Note, e.Kind));
+
+        // An event delivered after the expiry does not bring it back
+        Assert.Empty(ParseAll(parser, ClaudeNotice("u-33",
+            """<task-id>m7q</task-id>\n<summary>Monitor event: \"Probe progress\"</summary>\n<event>step 5 of 5</event>""")));
+    }
+
     [Fact]
     public void Claude_ImagesPastedFromSideHub_AreTakenOutOfTheText()
     {
