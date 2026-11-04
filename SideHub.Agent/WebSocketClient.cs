@@ -879,7 +879,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         return new ConversationFeed(session.Provider, session.CliSessionId, path, parser, text =>
             text is not null && _ptySecrets.TryGetValue(ptySessionId, out var secrets) && SecretMasker.For(secrets.Env, secrets.Keys) is { } masker
                 ? masker.Process(text) + masker.Flush()
-                : text);
+                : text, ConversationFeed.SubagentsFor(session.Provider, path, cwd));
     }
 
     /// <summary>Largest image of a conversation sent to its viewers (an attachment is at most 5 MB once decoded).</summary>

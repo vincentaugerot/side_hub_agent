@@ -13,12 +13,14 @@ namespace SideHub.Agent.Conversation;
 /// <item><c>"type":"assistant"</c> lines: one content part per line (<c>text</c>, <c>tool_use</c>, <c>thinking</c>);</item>
 /// <item>every other line type is the CLI's metadata (titles, modes, attachments, requests): not part of the thread.</item>
 /// </list>
-/// Lines of sub-agents (<c>isSidechain</c>) and injected context (<c>isMeta</c>) are left out. A content part of a type
+/// Lines of sub-agents (<c>isSidechain</c>, unless <paramref name="sidechain"/>: the transcript of a sub-agent, see
+/// <see cref="ClaudeSubagents"/>) and injected context (<c>isMeta</c>) are left out. A content part of a type
 /// this parser does not know becomes an <see cref="ConversationKinds.Unknown"/> event.
 /// </summary>
 /// <param name="imageDirectories">Folders of the images pasted from SideHub (<c>.sidehub-images</c>): a reference to one of
 /// their files becomes an image of the message.</param>
-public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<string>? imageDirectories = null) : IConversationParser
+public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<string>? imageDirectories = null, bool sidechain = false)
+    : IConversationParser
 {
     private readonly IReadOnlyCollection<string> _imageDirectories = imageDirectories ?? [];
     private readonly TurnTracker _turn = new();
@@ -49,7 +51,7 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || True(root, "isSidechain") || True(root, "isMeta"))
+            if (root.ValueKind != JsonValueKind.Object || (!sidechain && True(root, "isSidechain")) || True(root, "isMeta"))
                 return [];
             var type = Str(root, "type");
             if (type is not ("user" or "assistant") || Prop(root, "message") is not { ValueKind: JsonValueKind.Object } message)

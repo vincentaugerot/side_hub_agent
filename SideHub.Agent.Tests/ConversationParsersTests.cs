@@ -441,4 +441,50 @@ public class ConversationParsersTests
             File.Delete(path);
         }
     }
+
+    [Fact]
+    public void Feed_FollowsTheSubagentOfARunningCall_FromItsTranscript()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"conversation-{Guid.NewGuid():N}");
+        var path = Path.Combine(root, "s1.jsonl");
+        var subagents = Path.Combine(root, "s1", "subagents");
+        Directory.CreateDirectory(subagents);
+        try
+        {
+            File.WriteAllText(path, ClaudeToolUse("toolu_ag", "Agent", """{"description":"Relire le diff","prompt":"Relis"}""") + "\n");
+            var feed = new ConversationFeed("claude", "s1", path, new ClaudeConversationParser(Cwd), t => t?.Replace("s3cr3t", "***"),
+                ConversationFeed.SubagentsFor("claude", path, Cwd));
+            var launched = Assert.Single(Steps(feed.Poll()));
+            Assert.Null(launched.Steps);
+
+            File.WriteAllText(Path.Combine(subagents, "agent-a1.meta.json"), """{"agentType":"general-purpose","description":"Relire le diff","toolUseId":"toolu_ag"}""");
+            string Sub(string line) => line.Replace("\"type\":\"assistant\"", "\"isSidechain\":true,\"type\":\"assistant\"")
+                .Replace("\"type\":\"user\"", "\"isSidechain\":true,\"type\":\"user\"");
+            File.WriteAllLines(Path.Combine(subagents, "agent-a1.jsonl"), [
+                Sub("""{"type":"user","message":{"role":"user","content":"Relis le diff"},"uuid":"su-1","timestamp":"2026-11-04T10:00:00Z"}"""),
+                Sub("""{"type":"assistant","message":{"id":"m-1","role":"assistant","usage":{"output_tokens":120},"content":[{"type":"tool_use","id":"t-r","name":"Read","input":{"file_path":"/work/side_hub/src/app.ts"}}]},"uuid":"sa-1","timestamp":"2026-11-04T10:00:05Z"}"""),
+                Sub("""{"type":"assistant","message":{"id":"m-2","role":"assistant","usage":{"output_tokens":80},"content":[{"type":"tool_use","id":"t-b","name":"Bash","input":{"command":"grep s3cr3t log"}}]},"uuid":"sa-2","timestamp":"2026-11-04T10:00:09Z"}"""),
+            ]);
+
+            var call = Assert.Single(Steps(feed.Poll()));
+            Assert.Equal("toolu_ag", call.Id);
+            Assert.Equal(2, call.Steps);
+            Assert.Equal(ToolCategories.Run, call.StepCategory);
+            Assert.Equal("grep *** log", call.StepTitle);
+            Assert.Equal(200, call.Tokens);
+            Assert.Empty(feed.Poll());
+
+            // Its result ends the call, which keeps what the sub-agent did; an ended call is no longer followed
+            File.AppendAllText(path, ClaudeResult("toolu_ag", "Rien à signaler") + "\n");
+            var ended = Assert.Single(Steps(feed.Poll()));
+            Assert.Equal(2, ended.Steps);
+            File.AppendAllText(Path.Combine(subagents, "agent-a1.jsonl"),
+                Sub("""{"type":"assistant","message":{"id":"m-3","role":"assistant","content":[{"type":"tool_use","id":"t-c","name":"Read","input":{"file_path":"a"}}]},"uuid":"sa-3"}""") + "\n");
+            Assert.Empty(feed.Poll());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

@@ -20,10 +20,19 @@ public sealed class ConversationFeed
     private readonly IConversationParser _parser;
     private readonly Func<string?, string?> _mask;
     private readonly List<ConversationEvent> _events = [];
+    private readonly ClaudeSubagents? _subagents;
+    /// <summary>The last progress of each sub-agent's call, kept on the call when the parser writes it again.</summary>
+    private readonly Dictionary<string, ClaudeSubagents.Progress> _progress = new(StringComparer.Ordinal);
+
+    /// <summary>Tools of claude that run a sub-agent.</summary>
+    private static readonly HashSet<string> SubagentTools = new(StringComparer.Ordinal) { "Agent", "Task" };
 
     /// <param name="mask">Masks the PTY's secrets in a text (identity when it has none).</param>
-    public ConversationFeed(string provider, string cliSessionId, string path, IConversationParser parser, Func<string?, string?> mask)
+    /// <param name="subagents">Follows the sub-agents of the session (claude), null for none.</param>
+    public ConversationFeed(string provider, string cliSessionId, string path, IConversationParser parser, Func<string?, string?> mask,
+        ClaudeSubagents? subagents = null)
     {
+        _subagents = subagents;
         Provider = provider;
         CliSessionId = cliSessionId;
         Path = path;
@@ -54,25 +63,40 @@ public sealed class ConversationFeed
     {
         var changed = new List<ConversationEvent>();
         foreach (var line in _tail.ReadNewLines())
-        {
             foreach (var parsed in _parser.Parse(line))
+                Keep(parsed, changed);
+        if (_subagents is not null)
+        {
+            var running = _events
+                .Where(e => e.Kind == ConversationKinds.Tool && e.Status == ToolStatuses.Running && e.Tool is { } tool && SubagentTools.Contains(tool))
+                .Select(e => e.Id).ToList();
+            foreach (var (callId, progress) in _subagents.Poll(running))
             {
-                var masked = Mask(parsed);
-                var kept = _events.FindIndex(e => e.Id == masked.Id);
-                if (kept >= 0)
-                    _events[kept] = masked;
-                else
-                    _events.Add(masked);
-                var sent = changed.FindIndex(e => e.Id == masked.Id);
-                if (sent >= 0)
-                    changed[sent] = masked;
-                else
-                    changed.Add(masked);
+                _progress[callId] = progress;
+                if (_events.Find(e => e.Id == callId) is { } call) Keep(call, changed);
             }
         }
         if (_events.Count > MaxEvents)
             _events.RemoveRange(0, _events.Count - MaxEvents);
         return changed;
+    }
+
+    /// <summary>An event added or changed: kept (with its sub-agent's progress), and listed once in <paramref name="changed"/>.</summary>
+    private void Keep(ConversationEvent parsed, List<ConversationEvent> changed)
+    {
+        var masked = Mask(_progress.TryGetValue(parsed.Id, out var p)
+            ? parsed with { Steps = p.Steps, StepCategory = p.Category, StepTitle = p.Title, Tokens = p.Tokens }
+            : parsed);
+        var kept = _events.FindIndex(e => e.Id == masked.Id);
+        if (kept >= 0)
+            _events[kept] = masked;
+        else
+            _events.Add(masked);
+        var sent = changed.FindIndex(e => e.Id == masked.Id);
+        if (sent >= 0)
+            changed[sent] = masked;
+        else
+            changed.Add(masked);
     }
 
     /// <summary>Types met in the transcript that the parser does not know, each once.</summary>
@@ -84,6 +108,7 @@ public sealed class ConversationFeed
         Text = ConversationText.Cap(_mask(e.Text), ConversationText.MaxTextLength),
         Title = ConversationText.Cap(_mask(e.Title), ConversationText.MaxTitleLength),
         Excerpt = ConversationText.Cap(_mask(e.Excerpt), ConversationText.MaxExcerptLength),
+        StepTitle = ConversationText.Cap(_mask(e.StepTitle), ConversationText.MaxTitleLength),
     };
 
     /// <summary>
@@ -96,4 +121,8 @@ public sealed class ConversationFeed
         "codex" => new CodexConversationParser(cwd, imageDirectories),
         _ => null,
     };
+
+    /// <summary>What follows the sub-agents of a CLI's session: claude only (codex's sub-agents are not read).</summary>
+    public static ClaudeSubagents? SubagentsFor(string provider, string path, string cwd) =>
+        provider == "claude" ? new ClaudeSubagents(path, cwd) : null;
 }
