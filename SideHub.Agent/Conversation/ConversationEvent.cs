@@ -47,11 +47,16 @@ public sealed record ConversationEvent
     public string? Excerpt { get; init; }
 
     /// <summary>
-    /// What a <see cref="ConversationKinds.Note"/> stands for (<c>interrupted</c>, <c>compacted</c>, <c>task</c>), or for an
+    /// What a <see cref="ConversationKinds.Note"/> stands for (<c>interrupted</c>, <c>compacted</c>, <c>task</c>), for a
+    /// message of the user <c>peer</c> when another CLI session sent it (claude, <see cref="From"/>), or for an
     /// <see cref="ConversationKinds.Unknown"/> event the type of what was not recognized.
     /// </summary>
     [JsonPropertyName("label"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Label { get; init; }
+
+    /// <summary>For a message labelled <c>peer</c>: the name of the session that sent it, when it gives one.</summary>
+    [JsonPropertyName("from"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? From { get; init; }
 
     /// <summary>
     /// Images pasted from SideHub into a message of the user: file names in the agent's <c>.sidehub-images</c> folder, the
@@ -92,7 +97,7 @@ public sealed record ConversationEvent
 
     /// <summary>The length of its texts, to keep a snapshot within <see cref="ConversationFeed.MaxSnapshotChars"/>.</summary>
     [JsonIgnore]
-    public int Size => (Text?.Length ?? 0) + (Title?.Length ?? 0) + (Excerpt?.Length ?? 0) + (StepTitle?.Length ?? 0) + 64
+    public int Size => (Text?.Length ?? 0) + (Title?.Length ?? 0) + (From?.Length ?? 0) + (Excerpt?.Length ?? 0) + (StepTitle?.Length ?? 0) + 64
                        + (Images?.Count ?? 0) * 64;
 }
 

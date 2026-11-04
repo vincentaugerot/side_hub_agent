@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -10,9 +11,11 @@ namespace SideHub.Agent.Conversation;
 /// <list type="bullet">
 /// <item><c>"type":"user"</c> lines: the user's messages (a string, or text and image parts), and the results of tool
 /// calls (<c>tool_result</c> parts, matched to their call by <c>tool_use_id</c>);</item>
-/// <item><c>"type":"assistant"</c> lines: one content part per line (<c>text</c>, <c>tool_use</c>, <c>thinking</c>);</item>
+/// <item><c>"type":"assistant"</c> lines: one content part per line (<c>text</c>, <c>tool_use</c>, <c>thinking</c>: left out, but for the narration the terminal shows as text, see <see cref="IsNarration"/>);</item>
 /// <item><c>"type":"attachment"</c> lines of a <c>queued_command</c>: a message the user typed while Claude worked, or the
 /// notice of a background task;</item>
+/// <item>a message of another Claude session of the machine (<c>&lt;cross-session-message&gt;</c>, <see cref="PeerMessage"/>):
+/// a message of the user labelled <c>peer</c>, with the name of the session that sent it;</item>
 /// <item>every other line type is the CLI's metadata (titles, modes, attachments, requests): not part of the thread.</item>
 /// </list>
 /// Lines of sub-agents (<c>isSidechain</c>, unless <paramref name="sidechain"/>: the transcript of a sub-agent, see
@@ -56,7 +59,8 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || (!sidechain && True(root, "isSidechain")) || True(root, "isMeta"))
+            // A message of another Claude session is injected context (isMeta), written for the thread all the same
+            if (root.ValueKind != JsonValueKind.Object || (!sidechain && True(root, "isSidechain")) || (True(root, "isMeta") && !FromPeer(root)))
                 return [];
             var type = Str(root, "type");
             if (type is not ("user" or "assistant") || Prop(root, "message") is not { ValueKind: JsonValueKind.Object } message)
@@ -150,6 +154,15 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             return [];
         if (trimmed.StartsWith("<task-notification>", StringComparison.Ordinal))
             return TaskNotifications(id, at, trimmed);
+        if (PeerMessage.Match(trimmed) is { Success: true } peer)
+            return string.IsNullOrWhiteSpace(peer.Groups["body"].Value) ? [] : [new ConversationEvent
+            {
+                Id = id, Kind = ConversationKinds.User, At = at, Label = "peer",
+                From = PeerName.Match(peer.Groups["attrs"].Value) is { Success: true } name && !string.IsNullOrWhiteSpace(name.Groups[1].Value)
+                    ? Head(WebUtility.HtmlDecode(name.Groups[1].Value).Trim(), MaxTitleLength)
+                    : null,
+                Text = Head(peer.Groups["body"].Value.Trim(), MaxTextLength),
+            }];
         var (rest, images) = TakeImages(Unpasted(text), _imageDirectories);
         if (string.IsNullOrWhiteSpace(rest) && images is null) return [];
         return [new ConversationEvent
@@ -166,6 +179,21 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
     private static readonly Regex BackgroundTask = new(
         @"\A(?:Command running in background with ID: (?<id>[A-Za-z0-9_-]+)|Monitor started \(task (?<id>[A-Za-z0-9_-]+)|Async agent launched successfully\.[^\n]*\nagentId: (?<id>[A-Za-z0-9_-]+))",
         RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A message sent by another Claude session on this machine (<c>SendMessage</c> to a local session): one
+    /// <c>&lt;cross-session-message from="…" from-name="…" from-mode="…"&gt;</c> block, alone when the running turn takes it
+    /// in (a <c>queued_command</c>), after « Another Claude session sent a message: » when it starts a turn (an
+    /// <c>isMeta</c> user line whose <c>origin.kind</c> is <c>peer</c>).
+    /// </summary>
+    private static readonly Regex PeerMessage = new(
+        @"\A(?:[^\n<]*\r?\n)?<cross-session-message(?<attrs>[^>]*)>(?<body>.*?)</cross-session-message>",
+        RegexOptions.CultureInvariant | RegexOptions.Singleline);
+
+    private static readonly Regex PeerName = new(@"\sfrom-name=""([^""]*)""", RegexOptions.CultureInvariant);
+
+    private static bool FromPeer(JsonElement root) =>
+        Prop(root, "origin") is { ValueKind: JsonValueKind.Object } origin && Str(origin, "kind") == "peer";
 
     private static readonly Regex PastedOpen = new(@"<pasted_content id=""[^""\r\n]*"">\r?\n?", RegexOptions.CultureInvariant);
     private static readonly Regex PastedClose = new(@"\r?\n?</pasted_content(?: id=""[^""\r\n]*"")?>", RegexOptions.CultureInvariant);
@@ -347,6 +375,10 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
                         if (Stopped(call.Tool, Prop(part, "input") ?? default) is { } stopped) events.Add(stopped);
                     }
                     break;
+                // What Claude says between two steps, which the terminal shows as its text
+                case "thinking" when Str(part, "thinking") is { } said && !string.IsNullOrWhiteSpace(said) && IsNarration(Str(part, "signature")):
+                    events.Add(new ConversationEvent { Id = partId, Kind = ConversationKinds.Assistant, At = at, Text = Head(said.Trim(), MaxTextLength) });
+                    break;
                 case { } type when SkippedParts.Contains(type):
                     break;
                 case { } other:
@@ -360,6 +392,71 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         if (_turn.AddResponse(Str(message, "id"), tokens, at) is { } turn)
             events.Add(turn);
         return events;
+    }
+
+    /// <summary>
+    /// A <c>thinking</c> part the API tagged as narration: the few words the model says to the user between two steps
+    /// (« La CI est verte, je pousse… »), which Claude Code shows as text, not as thinking. The tag is in the part's
+    /// signature, a base64 protobuf: field 2, then its field 1, then its field 8 is the string <c>narration</c> (as
+    /// Claude Code 2.1.318 reads it). Any other thinking stays out of the thread.
+    /// </summary>
+    public static bool IsNarration(string? signature)
+    {
+        if (string.IsNullOrEmpty(signature)) return false;
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(signature.Length % 4 == 0 ? signature : signature.PadRight(signature.Length + 4 - signature.Length % 4, '='));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        return Field(bytes, 2) is { } block && Field(block, 1) is { } info && Field(info, 8) is { } kind
+               && kind.Span.SequenceEqual("narration"u8);
+    }
+
+    /// <summary>The first length-delimited field <paramref name="number"/> of a protobuf message, null when absent or malformed.</summary>
+    private static ReadOnlyMemory<byte>? Field(ReadOnlyMemory<byte> message, int number)
+    {
+        var span = message.Span;
+        var i = 0;
+        while (i < span.Length)
+        {
+            if (!Varint(span, ref i, out var tag)) return null;
+            switch (tag & 7)
+            {
+                case 0:
+                    if (!Varint(span, ref i, out _)) return null;
+                    break;
+                case 1:
+                    i += 8;
+                    break;
+                case 5:
+                    i += 4;
+                    break;
+                case 2:
+                    if (!Varint(span, ref i, out var length) || length > (ulong)(span.Length - i)) return null;
+                    if (tag >> 3 == (ulong)number) return message.Slice(i, (int)length);
+                    i += (int)length;
+                    break;
+                default:
+                    return null;
+            }
+        }
+        return null;
+    }
+
+    private static bool Varint(ReadOnlySpan<byte> span, ref int i, out ulong value)
+    {
+        value = 0;
+        for (var shift = 0; shift < 64 && i < span.Length; shift += 7)
+        {
+            var b = span[i++];
+            value |= (ulong)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) return true;
+        }
+        return false;
     }
 
     private ConversationEvent? ToolCall(JsonElement part, DateTime? at)

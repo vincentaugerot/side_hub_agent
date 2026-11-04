@@ -107,6 +107,7 @@ public sealed class ConversationFeed
     {
         Text = ConversationText.Cap(_mask(e.Text), ConversationText.MaxTextLength),
         Title = ConversationText.Cap(_mask(e.Title), ConversationText.MaxTitleLength),
+        From = ConversationText.Cap(_mask(e.From), ConversationText.MaxTitleLength),
         Excerpt = ConversationText.Cap(_mask(e.Excerpt), ConversationText.MaxExcerptLength),
         StepTitle = ConversationText.Cap(_mask(e.StepTitle), ConversationText.MaxTitleLength),
     };

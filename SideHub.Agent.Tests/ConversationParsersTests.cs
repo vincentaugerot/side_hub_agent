@@ -62,6 +62,43 @@ public class ConversationParsersTests
         Assert.Equal(new DateTime(2026, 11, 4, 8, 33, 30, 591, DateTimeKind.Utc), events[0].At);
     }
 
+    /// <summary>A thinking signature as the API writes it: field 2 { field 1 { 0x08 0x13, field 8 = <paramref name="kind"/> } }.</summary>
+    private static string Signature(string kind)
+    {
+        byte[] Delimited(int field, byte[] body) => [(byte)(field << 3 | 2), (byte)body.Length, .. body];
+        var info = Delimited(1, [0x08, 0x13, .. Delimited(8, System.Text.Encoding.ASCII.GetBytes(kind))]);
+        return Convert.ToBase64String([0x08, 0x04, .. Delimited(2, [.. info, 0x12, 0x02, 0xAA, 0xBB])]);
+    }
+
+    private static string ClaudeThinkingPart(string uuid, string text, string signature) =>
+        $$"""{"isSidechain":false,"message":{"id":"msg_9","role":"assistant","content":[{"type":"thinking","thinking":"{{text}}","signature":"{{signature}}"}]},"type":"assistant","uuid":"{{uuid}}"}""";
+
+    [Fact]
+    public void Claude_Narration_IsText_OtherThinkingIsLeftOut()
+    {
+        var events = ParseAll(new ClaudeConversationParser(Cwd),
+            ClaudeThinkingPart("a-8", "Je compare les deux branches.", Signature("thinking")),
+            ClaudeThinkingPart("a-9", "La CI est verte, je pousse.\\n\\n", Signature("narration")),
+            ClaudeThinkingPart("a-10", "", Signature("narration")),
+            ClaudeThinkingPart("a-11", "Abimé", "pas-du-base64!"));
+
+        var said = Assert.Single(events);
+        Assert.Equal(ConversationKinds.Assistant, said.Kind);
+        Assert.Equal("a-9", said.Id);
+        Assert.Equal("La CI est verte, je pousse.", said.Text);
+    }
+
+    [Fact]
+    public void Claude_IsNarration_ReadsARealSignature()
+    {
+        // Start of the signature of a narration part written by Claude Code 2.1.318, cut: a malformed message is no narration
+        const string cut = "CAQStAYKEQgTGAI4AUIJbmFycmF0aW9uEgwt";
+        Assert.False(ClaudeConversationParser.IsNarration(cut));
+        Assert.True(ClaudeConversationParser.IsNarration(Signature("narration")));
+        Assert.False(ClaudeConversationParser.IsNarration(Signature("thinking")));
+        Assert.False(ClaudeConversationParser.IsNarration(null));
+    }
+
     [Fact]
     public void Claude_ToolResult_SendsTheCallAgain_DoneWithItsOutput()
     {
@@ -249,6 +286,37 @@ public class ConversationParsersTests
         // Not a message of this conversation: a line of a sub-agent
         Assert.Empty(parser.Parse(
             """{"isSidechain":true,"attachment":{"type":"queued_command","prompt":"pour le sous-agent","commandMode":"prompt"},"type":"attachment","uuid":"q-3"}"""));
+    }
+
+    [Fact]
+    public void Claude_MessageOfAnotherSession_IsAPeerMessage_WithItsSender()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+
+        // Sent while the session is idle: an injected user line (isMeta) from a peer, that starts a turn
+        var idle = parser.Parse(
+            """{"isSidechain":false,"type":"user","message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/run/user/0/cc-socks/41.sock\" from-name=\"hardslice-a0\" from-mode=\"prompting\">\nPB-088 committed on main: `7c2281b`.\n</cross-session-message>"},"isMeta":true,"uuid":"u-p1","timestamp":"2026-11-04T22:45:34.655Z","origin":{"kind":"peer","from":"uds:/run/user/0/cc-socks/41.sock","name":"hardslice-a0","fromMode":"prompting","body":"PB-088 committed on main: `7c2281b`."}}""");
+        var message = Assert.Single(Steps(idle));
+        Assert.Equal(ConversationKinds.User, message.Kind);
+        Assert.Equal("peer", message.Label);
+        Assert.Equal("hardslice-a0", message.From);
+        Assert.Equal("PB-088 committed on main: `7c2281b`.", message.Text);
+        Assert.Contains(idle, e => e.Kind == ConversationKinds.Turn);
+
+        // Taken in by the running turn: a queued command, in the turn (no new one)
+        var busy = parser.Parse(
+            """{"isSidechain":false,"attachment":{"type":"queued_command","prompt":"<cross-session-message from=\"uds:/run/user/0/cc-socks/42.sock\" from-name=\"hardslice-aa\" from-mode=\"prompting\">\nPlease commit PB-088 now.\n1. Do not wait.\n</cross-session-message>","commandMode":"prompt","origin":{"kind":"peer","name":"hardslice-aa"}},"type":"attachment","uuid":"q-p2","timestamp":"2026-11-04T22:40:00.000Z"}""");
+        var queued = Assert.Single(busy);
+        Assert.Equal("peer", queued.Label);
+        Assert.Equal("hardslice-aa", queued.From);
+        Assert.Equal("Please commit PB-088 now.\n1. Do not wait.", queued.Text);
+
+        // Without a name: still a peer message
+        var anonymous = Assert.Single(Steps(parser.Parse(
+            """{"isSidechain":false,"type":"user","message":{"role":"user","content":"<cross-session-message from=\"uds:/x.sock\">Salut</cross-session-message>"},"uuid":"u-p3"}""")));
+        Assert.Equal("peer", anonymous.Label);
+        Assert.Null(anonymous.From);
+        Assert.Equal("Salut", anonymous.Text);
     }
 
     [Fact]
