@@ -31,6 +31,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     // Last output of each PTY: a terminal still printing (a codex turn, a build) is busy for the updates
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastOutput = new();
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
+    // The end of a run whose PTY exited while the backend was away (cli.limit, its CLI's answer, pty.exited), sent at
+    // the next connection: the run then ends as it did, not as agent-lost. In memory: a restart of the agent loses it.
+    private readonly List<object> _heldRunEnds = new();
+    private const int MaxHeldRunEnds = 300;
     // Background tasks reading the CLI-session notification FIFO for each PTY.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
     // Secret each PTY's notification lines must carry (NotifyFifo.SecretVariable), minted at spawn
@@ -646,7 +650,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     /// Sends <c>cli.limit</c> for the PTY (doc 60), unless it repeats the last one sent for it. The message is masked with
     /// the PTY's secrets while it is open (a run's last lines already are).
     /// </summary>
-    private async Task ReportCliLimitAsync(string ptySessionId, CliLimitReport limit, CancellationToken ct)
+    private async Task ReportCliLimitAsync(string ptySessionId, CliLimitReport limit, CancellationToken ct, bool runEnd = false)
     {
         if (limit.SameAs(_cliLimits.GetValueOrDefault(ptySessionId)))
             return;
@@ -662,7 +666,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         // The message stays out of the log: it is whatever the CLI printed
         Log($"CLI limit in PTY {ptySessionId}: provider={limit.Provider} window={limit.Window} "
             + $"resetsAt={limit.ResetsAt?.UtcDateTime.ToString("u") ?? "(unknown)"} source={limit.Source}{(runId is { } id ? $" run={id}" : "")}");
-        await TrySendAsync(limit.ToMessage(ptySessionId, runId, mask, DateTime.UtcNow), ct);
+        var message = limit.ToMessage(ptySessionId, runId, mask, DateTime.UtcNow);
+        if (runEnd)
+            await SendRunEndAsync(message, ct);
+        else
+            await TrySendAsync(message, ct);
     }
 
     /// <summary>Whether the codex session of a PTY reached a limit, as of its rollout (doc 60).</summary>
@@ -698,7 +706,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 return;
             if (limit.Message is null && CliLimitPatterns.FindLine(limit.Provider, lastOutput) is { } line)
                 limit = limit with { Message = line };
-            await ReportCliLimitAsync(ptySessionId, limit, ct);
+            await ReportCliLimitAsync(ptySessionId, limit, ct, runEnd: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -761,7 +769,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             if (source.Sent is { } sent && sent.Text == text && sent.CliSessionId == cliSessionId)
                 return;
             Log($"CLI answer in PTY {ptySessionId} at exit: {text.Length} chars (provider={provider} cliSessionId={cliSessionId})");
-            await TrySendAsync(new PtyCliMessage
+            await SendRunEndAsync(new PtyCliMessage
             {
                 PtySessionId = ptySessionId, Provider = provider, CliSessionId = cliSessionId, Text = text, At = DateTime.UtcNow,
             }, ct);
@@ -1363,6 +1371,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // The backend asks again for the PTYs still looked at in Conversation mode
                 StopAllConversationWatches();
                 await ReportAlivePtySessionsAsync(ct);
+                await ReplayHeldRunEndsAsync(ct);
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
                 RunInBackground("pending review.changes replay", () => _reviews.ReplayPendingAsync(ct));
                 RunInBackground("review purge", () => _reviews.PurgeIfDueAsync(ct));
@@ -2169,6 +2178,46 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         }
     }
 
+    /// <summary>
+    /// Sends one message of a run's end, or holds it for the next connection when the backend is away: a network cut
+    /// leaves the run's CLI going, and the backend keeps the run active a while for its end.
+    /// </summary>
+    private async Task SendRunEndAsync(object message, CancellationToken ct)
+    {
+        if (await TrySendAsync(message, ct))
+            return;
+        lock (_heldRunEnds)
+        {
+            if (_heldRunEnds.Count >= MaxHeldRunEnds)
+                return;
+            _heldRunEnds.Add(message);
+        }
+        if (message is PtyExitedMessage exited)
+            Log($"Backend away: exit of run PTY {exited.PtySessionId} (code {exited.ExitCode}) held for the next connection");
+    }
+
+    /// <summary>Sends, in order, the ends of runs held while the backend was away.</summary>
+    private async Task ReplayHeldRunEndsAsync(CancellationToken ct)
+    {
+        List<object> held;
+        lock (_heldRunEnds)
+        {
+            held = [.. _heldRunEnds];
+            _heldRunEnds.Clear();
+        }
+        for (var i = 0; i < held.Count; i++)
+        {
+            if (!await TrySendAsync(held[i], ct))
+            {
+                lock (_heldRunEnds)
+                    _heldRunEnds.InsertRange(0, held.Skip(i));
+                return;
+            }
+            if (held[i] is PtyExitedMessage exited)
+                Log($"Exit of run PTY {exited.PtySessionId} (code {exited.ExitCode}) sent after reconnecting");
+        }
+    }
+
     /// <summary>Like <see cref="SendAsync{T}"/>, but reports failure instead of dropping or throwing.</summary>
     private async Task<bool> TrySendAsync<T>(T message, CancellationToken ct)
     {
@@ -2341,7 +2390,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                             await ReportRunLastMessageAsync(ptySessionId, answerSource,
                                 SecretMasker.For(message.AdditionalEnv, message.SecretKeys), ct);
                         _cliLimits.TryRemove(ptySessionId, out _);
-                        await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput }, ct);
+                        var exited = new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput };
+                        if (isRun)
+                            await SendRunEndAsync(exited, ct);
+                        else
+                            await SendAsync(exited, ct);
                         HarvestFinalUsage(ptySessionId, "exit");
                         RefreshCliAuthAfterTerminal(ct);
                     },
