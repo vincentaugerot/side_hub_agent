@@ -794,7 +794,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         // The PTY may not exist yet (the agent restarted, the tab starts it again): the watch waits for it
         var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _conversationWatches[ptySessionId] = cts;
-        RunInBackground("conversation", () => WatchConversationAsync(ptySessionId, cts.Token));
+        // Read now: a watch message that comes before the task starts disposes cts, whose Token then throws
+        var token = cts.Token;
+        RunInBackground("conversation", () => WatchConversationAsync(ptySessionId, token));
     }
 
     private void StopConversationWatch(string ptySessionId)
@@ -1032,7 +1034,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
         if (launched.Provider == "codex" && _codexRollouts is not null
             && _ptyFifoReaders.TryGetValue(ptySessionId, out var reader))
-            RunInBackground("codex session id", () => AnnounceCodexSessionAsync(ptySessionId, launched.Cwd, at, observation, reader.Token));
+        {
+            // Read now: the reader is disposed when the PTY ends, maybe before the task starts
+            var readerToken = reader.Token;
+            RunInBackground("codex session id", () => AnnounceCodexSessionAsync(ptySessionId, launched.Cwd, at, observation, readerToken));
+        }
     }
 
     /// <summary>How long a codex launch is matched to its rollout: codex only writes one once the conversation starts.</summary>
@@ -1093,7 +1099,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             return;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(reader.Token);
         _codexTurnWatches[ptySessionId] = cts;
-        RunInBackground("codex turns", () => WatchCodexTurnsAsync(ptySessionId, cliSessionId, cts.Token));
+        // Read now: StopCodexTurnWatch may dispose cts before the task starts
+        var token = cts.Token;
+        RunInBackground("codex turns", () => WatchCodexTurnsAsync(ptySessionId, cliSessionId, token));
     }
 
     private void StopCodexTurnWatch(string ptySessionId)
