@@ -582,4 +582,88 @@ public class ConversationParsersTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    // === Images shown by tool calls (doc 70) ===
+
+    private const string Png1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    private const string ClaudeReadImage =
+        """{"isSidechain":false,"message":{"id":"msg_5","role":"assistant","content":[{"type":"tool_use","id":"toolu_5","name":"Read","input":{"file_path":"/tmp/shot.png"}}]},"type":"assistant","uuid":"a-5","timestamp":"2026-11-04T08:40:00.000Z"}""";
+
+    private const string ClaudeReadImageResult =
+        $$$"""{"isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_5","type":"tool_result","content":[{"type":"image","source":{"type":"base64","data":"{{{Png1x1}}}","media_type":"image/png"}}]}]},"uuid":"u-5","timestamp":"2026-11-04T08:40:01.000Z"}""";
+
+    [Fact]
+    public void Claude_AToolResultImage_IsAnImageOfTheCall_WithItsData()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        var events = ParseAll(parser, ClaudeReadImage, ClaudeReadImageResult);
+
+        var call = events[^1];
+        Assert.Equal("toolu_5", call.Id);
+        Assert.Equal(ToolStatuses.Done, call.Status);
+        var name = Assert.Single(call.Images!);
+        Assert.Equal("toolu_5-1.png", name);
+        var image = parser.Images.Find(name)!;
+        Assert.Equal(Png1x1, image.Data);
+        Assert.Equal("/tmp/shot.png", image.FilePath);
+        Assert.Equal(new DateTime(2026, 11, 4, 8, 40, 0, DateTimeKind.Utc), image.At);
+        Assert.Equal(Convert.FromBase64String(Png1x1), ToolImages.Load(image).Bytes);
+    }
+
+    [Fact]
+    public void Claude_APlaywrightScreenshotSavedToAFile_IsThatFile_UnderTheSessionFolder()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        var events = ParseAll(parser,
+            """{"isSidechain":false,"message":{"id":"msg_6","role":"assistant","content":[{"type":"tool_use","id":"toolu_6","name":"mcp__playwright__browser_take_screenshot","input":{"scale":"css","filename":".playwright-mcp/home.png"}}]},"type":"assistant","uuid":"a-6"}""",
+            """{"isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_6","type":"tool_result","content":[{"type":"text","text":"### Result\n- [Screenshot of viewport](.playwright-mcp/home.png)\n### Ran Playwright code"}]}]},"uuid":"u-6"}""");
+
+        var call = events[^1];
+        Assert.Equal(".playwright-mcp/home.png", call.Title);
+        var image = parser.Images.Find(Assert.Single(call.Images!))!;
+        Assert.Null(image.Data);
+        Assert.Equal(Path.GetFullPath(Path.Combine(Cwd, ".playwright-mcp/home.png")), image.FilePath);
+        Assert.Equal("not-found", ToolImages.Load(image).Error);
+    }
+
+    [Fact]
+    public void Claude_ALinkInTheResultOfAnotherTool_IsNoImage()
+    {
+        var parser = new ClaudeConversationParser(Cwd);
+        var events = ParseAll(parser, ClaudeBash,
+            """{"isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"see [the logo](logo.png)"}]},"uuid":"u-7"}""");
+
+        Assert.Null(events[^1].Images);
+        Assert.Empty(parser.Images.All());
+    }
+
+    [Fact]
+    public void Codex_AnImageView_IsAReadOfThatFile_WithItsImage()
+    {
+        var parser = new CodexConversationParser(Cwd);
+        var view = Assert.Single(ParseAll(parser, CodexItem(
+            """{"type":"ImageView","id":"exec-9","path":"file:///work/side_hub/docs/og.png"}""")));
+
+        Assert.Equal(ConversationKinds.Tool, view.Kind);
+        Assert.Equal(ToolCategories.Read, view.Category);
+        Assert.Equal("docs/og.png", view.Title);
+        Assert.Equal(ToolStatuses.Done, view.Status);
+        Assert.Equal("/work/side_hub/docs/og.png", parser.Images.Find(Assert.Single(view.Images!))!.FilePath);
+    }
+
+    [Fact]
+    public void ToolImages_OnlyTheLastOnesKeepTheirData()
+    {
+        var images = new ToolImages();
+        for (var i = 0; i < ToolImages.MaxWithData + 5; i++)
+            images.Add(new ToolImage($"c{i}-1.png", $"c{i}", null, Png1x1, "image/png", i == 0 ? "/tmp/a.png" : null));
+
+        var all = images.All();
+        Assert.Null(all[0].Data);
+        Assert.Equal("/tmp/a.png", all[0].FilePath);
+        Assert.Equal(ToolImages.MaxWithData, all.Count(i => i.Data is not null));
+        Assert.Null(ToolImages.NameFor("c", 1, "image/gif", null));
+        Assert.Equal("t_x-1.jpg", ToolImages.NameFor("_x", 1, null, "/a/b.jpeg"));
+    }
 }

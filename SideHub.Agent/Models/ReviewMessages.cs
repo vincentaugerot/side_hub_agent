@@ -93,6 +93,62 @@ public class ReviewChangesMessage
     /// <summary>Why there are no changes to show (<see cref="ReviewErrors"/>); null when the round was measured.</summary>
     [JsonPropertyName("error")]
     public string? Error { get; init; }
+
+    /// <summary>
+    /// The images the CLI saw during the round (doc 70: screenshots, image files it read), copied next to the review's
+    /// record when the round ended; asked one by one (<c>review.capture.request</c>). Null when there is none.
+    /// </summary>
+    [JsonPropertyName("captures")]
+    public IReadOnlyList<ReviewCapture>? Captures { get; init; }
+}
+
+/// <summary>An image the CLI saw during a round, kept on this machine with the review's photos.</summary>
+public sealed record ReviewCapture
+{
+    /// <summary>Its file name in the review's folder: <c>r1-3.png</c> (round, rank).</summary>
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    /// <summary>When the tool call that showed it was made.</summary>
+    [JsonPropertyName("at")]
+    public DateTime? At { get; init; }
+
+    /// <summary>The CLI's name of that tool (<c>Read</c>, <c>mcp__playwright__browser_take_screenshot</c>, <c>ImageView</c>).</summary>
+    [JsonPropertyName("tool")]
+    public string? Tool { get; init; }
+
+    /// <summary>What the call worked on: the file it read or saved, the page's URL.</summary>
+    [JsonPropertyName("title")]
+    public string? Title { get; init; }
+
+    [JsonPropertyName("size")]
+    public long Size { get; init; }
+}
+
+/// <summary>Answer to <c>review.capture.request</c>: one image of a round (<see cref="ReviewCapture"/>), as base64.</summary>
+public class ReviewCaptureMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "review.capture";
+
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
+
+    [JsonPropertyName("reviewId")]
+    public required Guid ReviewId { get; init; }
+
+    [JsonPropertyName("image")]
+    public required string Image { get; init; }
+
+    [JsonPropertyName("mimeType")]
+    public string? MimeType { get; init; }
+
+    [JsonPropertyName("data")]
+    public string? Data { get; init; }
+
+    /// <summary><c>invalid</c>, <c>purged</c> (or never kept); null on success.</summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
 }
 
 public sealed record ReviewFileChange

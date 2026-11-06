@@ -45,6 +45,9 @@ public sealed class ConversationFeed
     public string CliSessionId { get; }
     public string Path { get; }
 
+    /// <summary>The images of the tool calls read so far, served to the viewers who ask for them (doc 70).</summary>
+    public ToolImages Images => _parser.Images;
+
     /// <summary>The kept events, oldest first, within <see cref="MaxSnapshotChars"/>.</summary>
     public IReadOnlyList<ConversationEvent> Snapshot()
     {

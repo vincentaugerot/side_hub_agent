@@ -36,6 +36,10 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
     private readonly Dictionary<string, ConversationEvent> _calls = new(StringComparer.Ordinal);
     private readonly HashSet<string> _unrecognized = new(StringComparer.Ordinal);
     private readonly List<string> _newUnrecognized = [];
+    /// <summary>Image files read by <c>Read</c> calls, by call id: the file of the image its result holds.</summary>
+    private readonly Dictionary<string, string> _readPaths = new(StringComparer.Ordinal);
+
+    public ToolImages Images { get; } = new();
 
     private static readonly HashSet<string> SkippedParts = new(StringComparer.Ordinal)
     {
@@ -347,9 +351,42 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             Background = call.Background == true ? false : null,
             // An edit keeps its diff; any other tool shows the start of what it returned, a failure always its error
             Excerpt = Head(failed || call.Category != ToolCategories.Edit || call.Excerpt is null ? output ?? call.Excerpt : call.Excerpt, MaxExcerptLength),
+            Images = failed ? null : ResultImages(callId, call, Prop(part, "content"), output),
         };
         _calls[callId] = updated;
         return updated;
+    }
+
+    /// <summary>A link to an image file in a tool's result: <c>[Screenshot of viewport](.playwright-mcp/page.png)</c>.</summary>
+    private static readonly Regex ImageLink = new(@"\]\(([^)\s]+\.(?:png|jpe?g|webp))\)", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// The images a call's result showed the CLI (doc 70), kept in <see cref="Images"/>: the image parts of the result
+    /// (claude's <c>Read</c> of an image, a tool returning one), else the file a screenshot tool says it saved (Playwright
+    /// MCP's <c>browser_take_screenshot</c> with a file name only links it). Null when there is none.
+    /// </summary>
+    private IReadOnlyList<string>? ResultImages(string callId, ConversationEvent call, JsonElement? content, string? output)
+    {
+        List<string>? names = null;
+        void Add(string? data, string? mediaType, string? filePath)
+        {
+            if (names?.Count >= MaxImages || ToolImages.NameFor(callId, (names?.Count ?? 0) + 1, mediaType, filePath) is not { } name) return;
+            Images.Add(new ToolImage(name, callId, call.At, data, mediaType, filePath));
+            (names ??= []).Add(name);
+        }
+        _readPaths.Remove(callId, out var readPath);
+        if (content is { ValueKind: JsonValueKind.Array } parts)
+            foreach (var part in parts.EnumerateArray())
+                if (Str(part, "type") == "image" && Prop(part, "source") is { ValueKind: JsonValueKind.Object } source
+                    && Str(source, "type") == "base64" && Str(source, "data") is { Length: > 0 } data)
+                    Add(data, Str(source, "media_type"), readPath);
+        if (names is null && output is not null && call.Tool is { } tool && tool.Contains("screenshot", StringComparison.OrdinalIgnoreCase))
+            foreach (Match link in ImageLink.Matches(output))
+            {
+                try { Add(null, null, Path.GetFullPath(Path.Combine(cwd, link.Groups[1].Value))); }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { }
+            }
+        return names;
     }
 
     private List<ConversationEvent> Assistant(JsonElement message, string id, DateTime? at)
@@ -476,7 +513,9 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
         };
         // A call written again (same id) keeps the result it already has
         if (_calls.TryGetValue(callId, out var known) && (known.Status != ToolStatuses.Running || known.Background == true))
-            call = call with { Status = known.Status, Excerpt = known.Excerpt, Background = known.Background };
+            call = call with { Status = known.Status, Excerpt = known.Excerpt, Background = known.Background, Images = known.Images };
+        else if (name == "Read" && Str(input, "file_path") is { Length: > 0 } readPath)
+            _readPaths[callId] = readPath;
         _calls[callId] = call;
         return call;
     }
@@ -543,7 +582,9 @@ public sealed class ClaudeConversationParser(string cwd, IReadOnlyCollection<str
             case "TodoWrite":
                 return (ToolCategories.Task, null, null);
             default:
-                return (ToolCategories.Other, FirstLine(Str(input, "description") ?? Str(input, "command") ?? Path()), null);
+                // An MCP tool: what it works on (Playwright: the page's URL, the screenshot's file)
+                return (ToolCategories.Other, FirstLine(Str(input, "description") ?? Str(input, "command") ?? Path()
+                    ?? Str(input, "url") ?? Relative(Str(input, "filename"), cwd)), null);
         }
     }
 

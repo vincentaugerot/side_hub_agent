@@ -22,7 +22,8 @@ public sealed class WorkReviewTests : IDisposable
 
     private string RepoPath(string name) => Path.Combine(_repo.FullName, name);
 
-    private WorkReviewTracker Tracker(string agent = "agent-a", WorkReviewTracker.FinalMessageReader? reader = null) => new(
+    private WorkReviewTracker Tracker(string agent = "agent-a", WorkReviewTracker.FinalMessageReader? reader = null,
+        WorkReviewTracker.CaptureReader? captures = null) => new(
         Path.Combine(_run.FullName, "reviews"), agent,
         new PendingReviewChangesStore(Path.Combine(_run.FullName, "pending", agent)),
         (report, _) =>
@@ -34,7 +35,7 @@ public sealed class WorkReviewTests : IDisposable
             return Task.FromResult(true);
         },
         reader ?? ((_, _, _, _) => null),
-        _ => { });
+        _ => { }, captures);
 
     private void InitRepository()
     {
@@ -473,5 +474,46 @@ public sealed class WorkReviewTests : IDisposable
         process.WaitForExit();
         Assert.Equal(0, process.ExitCode);
         return output;
+    }
+
+    private static readonly byte[] Png = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+
+    [Fact]
+    public async Task A_round_keeps_a_copy_of_the_images_the_cli_saw_served_until_the_purge()
+    {
+        if (!GitAvailable)
+            return;
+        InitRepository();
+        var screenshot = RepoPath("shot.png");
+        await File.WriteAllBytesAsync(screenshot, Png);
+        var tracker = Tracker(captures: (_, _, sessions, _) =>
+        [
+            new(new Conversation.ToolImage("toolu_1-1.png", "toolu_1", DateTime.UtcNow, null, null, screenshot), "mcp__playwright__browser_take_screenshot", "shot.png"),
+            // The same image read again: kept once
+            new(new Conversation.ToolImage("toolu_2-1.png", "toolu_2", DateTime.UtcNow, Convert.ToBase64String(Png), "image/png", null), "Read", "shot.png"),
+            new(new Conversation.ToolImage("toolu_3-1.png", "toolu_3", DateTime.UtcNow, null, null, RepoPath("gone.png")), "Read", "gone.png"),
+        ]);
+        var reviewId = Guid.NewGuid();
+        await StartAsync(tracker, reviewId, "pty-1");
+        tracker.RecordCliSession("pty-1", "claude", Guid.NewGuid().ToString());
+        File.AppendAllText(RepoPath("app.txt"), "three\n");
+        await tracker.EndRoundAsync("pty-1", "task-done", ReviewKinds.Task, CancellationToken.None);
+        // The screenshot is overwritten after the round: the review keeps what the CLI saw
+        File.Delete(screenshot);
+
+        var capture = Assert.Single(Assert.Single(_sent).Captures!);
+        Assert.Equal("r1-1.png", capture.Name);
+        Assert.Equal("Read", capture.Tool);
+        Assert.Equal(Png.Length, capture.Size);
+        var served = await tracker.CaptureAsync("c1", reviewId, "r1-1.png", CancellationToken.None);
+        Assert.Null(served.Error);
+        Assert.Equal("image/png", served.MimeType);
+        Assert.Equal(Png, Convert.FromBase64String(served.Data!));
+        Assert.Equal("invalid", (await tracker.CaptureAsync("c2", reviewId, "../r1-1.png", CancellationToken.None)).Error);
+        Assert.Equal(ReviewDiffErrors.Purged, (await tracker.CaptureAsync("c3", reviewId, "r1-2.png", CancellationToken.None)).Error);
+
+        await tracker.PurgeAsync(DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+        Assert.Equal(ReviewDiffErrors.Purged, (await tracker.CaptureAsync("c4", reviewId, "r1-1.png", CancellationToken.None)).Error);
     }
 }

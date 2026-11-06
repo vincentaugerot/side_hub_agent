@@ -125,6 +125,8 @@ public sealed class CodexConversationParser(string cwd, IReadOnlyCollection<stri
                 return FileChange(item, id, at, started);
             case "Extension":
                 return Extension(item, id, at, started);
+            case "ImageView":
+                return started ? null : ImageView(item, id, at);
             case "ContextCompaction":
                 return started ? null : new ConversationEvent { Id = id, Kind = ConversationKinds.Note, At = at, Label = "compacted" };
             case var skipped when SkippedItems.Contains(skipped):
@@ -237,6 +239,28 @@ public sealed class CodexConversationParser(string cwd, IReadOnlyCollection<stri
             Title = Head(string.Join(", ", paths), MaxTitleLength),
             Status = started ? ToolStatuses.Running : failed ? ToolStatuses.Failed : ToolStatuses.Done,
             Excerpt = Head(failed ? Str(item, "stderr") ?? Str(item, "stdout") : diff.Length > 0 ? diff.ToString() : null, MaxExcerptLength),
+        };
+    }
+
+    public ToolImages Images { get; } = new();
+
+    /// <summary><c>ImageView</c>: codex looked at an image file (<c>view_image</c>), kept as the call's image (doc 70).</summary>
+    private ConversationEvent ImageView(JsonElement item, string id, DateTime? at)
+    {
+        var path = Str(item, "path");
+        if (path is not null && path.StartsWith("file://", StringComparison.Ordinal)
+            && Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsFile)
+            path = uri.LocalPath;
+        IReadOnlyList<string>? images = null;
+        if (path is { Length: > 0 } && System.IO.Path.IsPathRooted(path) && ToolImages.NameFor(id, 1, null, path) is { } name)
+        {
+            Images.Add(new ToolImage(name, id, at, null, null, path));
+            images = [name];
+        }
+        return new ConversationEvent
+        {
+            Id = id, Kind = ConversationKinds.Tool, At = at, Tool = "ImageView", Category = ToolCategories.Read,
+            Title = Head(Relative(path, cwd), MaxTitleLength), Status = ToolStatuses.Done, Images = images,
         };
     }
 

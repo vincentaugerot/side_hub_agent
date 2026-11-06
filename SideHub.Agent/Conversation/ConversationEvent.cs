@@ -59,8 +59,9 @@ public sealed record ConversationEvent
     public string? From { get; init; }
 
     /// <summary>
-    /// Images pasted from SideHub into a message of the user: file names in the agent's <c>.sidehub-images</c> folder, the
-    /// front asks for each one when it shows it (<c>pty.conversation.image</c>).
+    /// Images pasted from SideHub into a message of the user (file names in the agent's <c>.sidehub-images</c> folder), or
+    /// the images a tool call showed the CLI (names of <see cref="IConversationParser.Images"/>, doc 70): the front asks
+    /// for each one when it shows it (<c>pty.conversation.image</c>).
     /// </summary>
     [JsonPropertyName("images"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Images { get; init; }
@@ -149,4 +150,7 @@ public interface IConversationParser
 
     /// <summary>Types met but not recognized since the last call, each once per session: logged by the agent.</summary>
     IReadOnlyList<string> TakeUnrecognized();
+
+    /// <summary>The images of the tool calls parsed so far, named as the events' <see cref="ConversationEvent.Images"/>.</summary>
+    ToolImages Images { get; }
 }

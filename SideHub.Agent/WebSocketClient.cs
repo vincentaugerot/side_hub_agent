@@ -61,6 +61,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly CliMessageTracker _cliMessages = new();
     /// <summary>PTYs someone looks at in Conversation mode (doc 69), with the token that stops following their transcript.</summary>
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _conversationWatches = new();
+    /// <summary>The conversation each watch of a PTY follows now: its tool images are served to the viewers (doc 70).</summary>
+    private readonly ConcurrentDictionary<string, (CancellationToken Watch, ConversationFeed Feed)> _conversationFeeds = new();
     // Reads a CLI session's last answer, per provider (claude, codex).
     private readonly Dictionary<string, ICliSessionUsageHarvester> _lastMessageReaders = new();
     // The secrets of each PTY (its env and which keys are secrets): masked in what is sent from its transcript too.
@@ -186,7 +188,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _questionCheckout = new QuestionCheckout(_fifoAgentKey, Log);
         _reviews = new WorkReviewTracker(Path.Combine(runDir, "reviews"), _fifoAgentKey,
             new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
-            _usageCollector.ReadFinalMessage, Log);
+            _usageCollector.ReadFinalMessage, Log, ReadSeenImages);
         _peerReviews = new PeerReviewCheckout(_fifoAgentKey, _reviews, Log);
         _outgoing = new OutgoingCommitsReporter(workingDirectory, TrySendAsync, Log);
         foreach (var (provider, harvester) in sessionHarvesters)
@@ -827,6 +829,20 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     /// </summary>
     private async Task WatchConversationAsync(string ptySessionId, CancellationToken ct)
     {
+        try
+        {
+            await FollowConversationAsync(ptySessionId, ct);
+        }
+        finally
+        {
+            // A newer watch of the PTY keeps its own feed
+            if (_conversationFeeds.TryGetValue(ptySessionId, out var mine) && mine.Watch == ct)
+                _conversationFeeds.TryRemove(new KeyValuePair<string, (CancellationToken, ConversationFeed)>(ptySessionId, mine));
+        }
+    }
+
+    private async Task FollowConversationAsync(string ptySessionId, CancellationToken ct)
+    {
         ConversationFeed? feed = null;
         string? unavailableFor = null;
         var waitingSince = DateTime.UtcNow;
@@ -851,6 +867,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 if (feed is null || session is null || feed.CliSessionId != session.CliSessionId || feed.Provider != session.Provider)
                 {
                     feed = session is null ? null : OpenConversationFeed(ptySessionId, session);
+                    if (feed is not null)
+                        _conversationFeeds[ptySessionId] = (ct, feed);
                     // Its session is only written with the first message (claude, and codex whose session is not even
                     // known before): nothing to read yet, not unreadable
                     var pending = feed is not null ? null
@@ -943,9 +961,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     }
 
     /// <summary>
-    /// An image of a message, asked by a viewer of the PTY in Conversation mode (doc 69): a file of the attachments folder
-    /// (<c>.sidehub-images</c>, plain name, read without following links), sent back as base64, or why not. Nothing else
-    /// of the disk can be read this way.
+    /// An image of a message, asked by a viewer of the PTY in Conversation mode (doc 69): an image a tool call of the
+    /// conversation followed showed the CLI (doc 70: its data in the transcript, or the file the transcript names), else a
+    /// file of the attachments folder (<c>.sidehub-images</c>, plain name, read without following links), sent back as
+    /// base64, or why not. Nothing else of the disk can be read this way.
     /// </summary>
     private async Task HandleConversationImageAsync(IncomingMessage message, CancellationToken ct)
     {
@@ -955,6 +974,17 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             error = "no-pty";
         else if (!ConversationText.IsImageName(name))
             error = "invalid";
+        else if (_conversationFeeds.TryGetValue(ptySessionId, out var followed) && followed.Feed.Images.Find(name) is { } image)
+        {
+            var loaded = await Task.Run(() => ToolImages.Load(image), ct);
+            if (loaded.Bytes is { } bytes)
+            {
+                data = Convert.ToBase64String(bytes);
+                mimeType = ToolImages.MediaTypeOf(name);
+            }
+            else
+                error = loaded.Error;
+        }
         else
         {
             try
@@ -1721,6 +1751,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "review.diff.request":
                     RunInBackground("review.diff.request", () => HandleReviewDiffRequestAsync(message, ct));
+                    break;
+                case "review.capture.request":
+                    RunInBackground("review.capture.request", () => HandleReviewCaptureRequestAsync(message, ct));
                     break;
                 case "git.push.request":
                     RunInBackground("git.push.request", () => HandleGitPushRequestAsync(message, ct));
@@ -2686,6 +2719,49 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var answer = await _reviews.DiffAsync(message.RequestId, reviewId, round, message.Path, ct);
         Log($"Review {reviewId} round {round} diff: " + (answer.Error ?? (answer.Truncated ? "too large" : $"{answer.Diff?.Length ?? 0} chars")));
         await SendAsync(answer, ct);
+    }
+
+    /// <summary>An image kept with a review round (doc 70), read from this machine.</summary>
+    private async Task HandleReviewCaptureRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || !Guid.TryParse(message.ReviewId, out var reviewId) || message.Image is not { Length: > 0 } image)
+        {
+            Log("review.capture.request ignored: requestId, reviewId and image are required");
+            return;
+        }
+        var answer = await _reviews.CaptureAsync(message.RequestId, reviewId, image, ct);
+        Log($"Review {reviewId} capture {image}: " + (answer.Error ?? $"{answer.Data!.Length} base64 chars"));
+        await SendAsync(answer, ct);
+    }
+
+    /// <summary>
+    /// The images the CLIs of a terminal saw since a moment (doc 70): the tool calls of their transcripts, read with the
+    /// parser of the Conversation mode, in the order they came. Titles masked with the PTY's secrets while it has them.
+    /// </summary>
+    private IReadOnlyList<WorkReviewTracker.SeenImage> ReadSeenImages(
+        string ptySessionId, string cwd, IReadOnlyList<KeyValuePair<string, string>> cliSessions, DateTimeOffset since)
+    {
+        var seen = new List<WorkReviewTracker.SeenImage>();
+        var masker = _ptySecrets.TryGetValue(ptySessionId, out var secrets) ? SecretMasker.For(secrets.Env, secrets.Keys) : null;
+        foreach (var (cliSessionId, provider) in cliSessions.Distinct())
+        {
+            if (!_lastMessageReaders.TryGetValue(provider, out var reader)
+                || ConversationFeed.ParserFor(provider, cwd) is not { } parser
+                || reader.SessionFiles(cwd, cliSessionId).FirstOrDefault() is not { } path
+                || !File.Exists(path))
+                continue;
+            var calls = new Dictionary<string, ConversationEvent>(StringComparer.Ordinal);
+            foreach (var line in new JsonlTail(path, ConversationFeed.MaxLineBytes).ReadNewLines())
+                foreach (var e in parser.Parse(line))
+                    if (e is { Kind: ConversationKinds.Tool, Images.Count: > 0 })
+                        calls[e.Id] = e;
+            foreach (var image in parser.Images.All())
+                if (image.At is not { } at || at >= since.UtcDateTime)
+                    if (calls.TryGetValue(image.CallId, out var call))
+                        seen.Add(new WorkReviewTracker.SeenImage(image, call.Tool,
+                            ConversationText.Cap(masker is null || call.Title is null ? call.Title : masker.Process(call.Title) + masker.Flush(), ConversationText.MaxTitleLength)));
+        }
+        return seen.OrderBy(s => s.Image.At ?? DateTime.MaxValue).ToList();
     }
 
     /// <summary>Pushes the commit a person confirmed in SideHub (doc 58); the fresh git.outgoing goes out before the answer.</summary>
