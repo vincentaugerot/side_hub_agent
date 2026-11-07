@@ -6,8 +6,9 @@ namespace SideHub.Agent.Review;
 
 /// <summary>
 /// When each round of a reviewed work started and ended, in a JSON-lines file of the run directory
-/// (<c>.sidehub/run/reviews/activity.jsonl</c>): shared by every agent working in that folder, so a round can tell
-/// that another one changed the same files at the same time.
+/// (<c>.sidehub/run/reviews/activity.jsonl</c>): shared by every agent of that folder, so a round can tell that another
+/// one changed the same files at the same time. A round's start says where it ran (<see cref="Entry.Folder"/>): the
+/// queue's worktree (doc 71) never overlaps the repository's folder.
 /// </summary>
 public sealed class WorkReviewActivity(string path)
 {
@@ -23,7 +24,10 @@ public sealed class WorkReviewActivity(string path)
         [property: JsonPropertyName("round")] int Round,
         [property: JsonPropertyName("agent")] string Agent,
         [property: JsonPropertyName("event")] string Event,
-        [property: JsonPropertyName("at")] DateTimeOffset At);
+        [property: JsonPropertyName("at")] DateTimeOffset At,
+        // The top level of the work tree the round photographs, on its start; null in the entries of older agents,
+        // which count for every folder.
+        [property: JsonPropertyName("folder"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Folder = null);
 
     public const string Start = "start";
     public const string End = "end";
@@ -40,22 +44,25 @@ public sealed class WorkReviewActivity(string path)
         }
     }
 
-    /// <summary>Whether another round ran in this folder between <paramref name="from"/> and <paramref name="to"/>.</summary>
-    public bool Overlaps(Guid reviewId, int round, DateTimeOffset from, DateTimeOffset to)
+    /// <summary>Whether another round ran in <paramref name="folder"/> (any folder when null) between
+    /// <paramref name="from"/> and <paramref name="to"/>.</summary>
+    public bool Overlaps(Guid reviewId, int round, DateTimeOffset from, DateTimeOffset to, string? folder = null)
     {
-        var rounds = new Dictionary<(Guid, int), (DateTimeOffset? Start, DateTimeOffset? End)>();
+        var rounds = new Dictionary<(Guid, int), (DateTimeOffset? Start, DateTimeOffset? End, string? Folder)>();
         foreach (var entry in Read())
         {
             if (entry.ReviewId == reviewId && entry.Round == round)
                 continue;
             var key = (entry.ReviewId, entry.Round);
             var known = rounds.GetValueOrDefault(key);
-            rounds[key] = entry.Event == Start ? known with { Start = entry.At } : known with { End = entry.At };
+            rounds[key] = entry.Event == Start ? known with { Start = entry.At, Folder = entry.Folder } : known with { End = entry.At };
         }
 
-        foreach (var (start, end) in rounds.Values)
+        foreach (var (start, end, other) in rounds.Values)
         {
             if (start is not { } s)
+                continue;
+            if (folder is not null && other is not null && !SameFolder(folder, other))
                 continue;
             var e = end ?? s + MaxRoundDuration;
             if (s < to && e > from)
@@ -63,6 +70,10 @@ public sealed class WorkReviewActivity(string path)
         }
         return false;
     }
+
+    private static bool SameFolder(string a, string b) =>
+        string.Equals(System.IO.Path.TrimEndingDirectorySeparator(a), System.IO.Path.TrimEndingDirectorySeparator(b),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     /// <summary>Drops the entries older than <paramref name="cutoff"/>.</summary>
     public void Prune(DateTimeOffset cutoff)

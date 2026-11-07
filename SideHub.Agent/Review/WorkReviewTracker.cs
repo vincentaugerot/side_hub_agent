@@ -48,6 +48,7 @@ public sealed class WorkReviewTracker
     private readonly string _directory;
     private readonly string _agentKey;
     private readonly WorkReviewActivity _activity;
+    private readonly string? _repositoryDirectory;
     private readonly PendingReviewChangesStore _pending;
     private readonly Func<ReviewChangesMessage, CancellationToken, Task<bool>> _trySend;
     private readonly FinalMessageReader _readFinalMessage;
@@ -74,12 +75,16 @@ public sealed class WorkReviewTracker
     /// <param name="directory">The agents' shared <c>.sidehub/run/reviews</c> folder.</param>
     /// <param name="agentKey">Names this agent in the folder's activity.</param>
     /// <param name="trySend">Sends a report; false when the backend is unreachable.</param>
+    /// <param name="repositoryDirectory">The agent's folder: its repository holds the photos of a review whose own
+    /// folder is gone (the queue's worktree removed, doc 71), git refs being shared by all the worktrees.</param>
     public WorkReviewTracker(
         string directory, string agentKey, PendingReviewChangesStore pending,
         Func<ReviewChangesMessage, CancellationToken, Task<bool>> trySend,
-        FinalMessageReader readFinalMessage, Action<string> log, CaptureReader? readCaptures = null)
+        FinalMessageReader readFinalMessage, Action<string> log, CaptureReader? readCaptures = null,
+        string? repositoryDirectory = null)
     {
         _readCaptures = readCaptures;
+        _repositoryDirectory = repositoryDirectory;
         _directory = directory;
         _agentKey = agentKey;
         _activity = new WorkReviewActivity(Path.Combine(directory, "activity.jsonl"));
@@ -165,7 +170,7 @@ public sealed class WorkReviewTracker
             Save(record);
 
             _open[ptySessionId] = new OpenRound(reviewId, round.Round, record.TopLevel, cwd);
-            _activity.Append(new WorkReviewActivity.Entry(reviewId, round.Round, _agentKey, WorkReviewActivity.Start, round.StartedAt));
+            _activity.Append(new WorkReviewActivity.Entry(reviewId, round.Round, _agentKey, WorkReviewActivity.Start, round.StartedAt, record.TopLevel));
             _log(round.Error is null
                 ? $"Review {reviewId} round {round.Round} started in PTY {ptySessionId} from {Short(round.Start)}"
                 : $"Review {reviewId} round {round.Round} started in PTY {ptySessionId} without a photo ({round.Error})");
@@ -393,12 +398,12 @@ public sealed class WorkReviewTracker
                 return new EndResult(null, ReviewErrors.NoChanges);
             }
 
-            round.Overlapping |= _activity.Overlaps(record.ReviewId, round.Round, round.StartedAt, round.EndedAt.Value);
+            round.Overlapping |= _activity.Overlaps(record.ReviewId, round.Round, round.StartedAt, round.EndedAt.Value, record.TopLevel);
             Save(record);
             // A round made from the base was never in the folder's activity: it ran from the base to now.
             if (open.FromBase)
                 _activity.Append(new WorkReviewActivity.Entry(
-                    record.ReviewId, round.Round, _agentKey, WorkReviewActivity.Start, round.StartedAt));
+                    record.ReviewId, round.Round, _agentKey, WorkReviewActivity.Start, round.StartedAt, record.TopLevel));
             _activity.Append(new WorkReviewActivity.Entry(
                 record.ReviewId, round.Round, _agentKey, WorkReviewActivity.End, round.EndedAt.Value));
             // The terminal's next round asked from it starts where this one ended.
@@ -526,10 +531,11 @@ public sealed class WorkReviewTracker
                 return Error(found.Error);
             if (found.Start is null || found.End is null)
                 return Error(ReviewDiffErrors.RoundOpen);
-            if (!await WorkReviewGit.ExistsAsync(record.TopLevel, found.Start, ct)
-                || !await WorkReviewGit.ExistsAsync(record.TopLevel, found.End, ct))
+            var git = GitDirectory(record);
+            if (!await WorkReviewGit.ExistsAsync(git, found.Start, ct)
+                || !await WorkReviewGit.ExistsAsync(git, found.End, ct))
                 return Error(ReviewDiffErrors.Purged);
-            return new RoundSnapshotsResult(new RoundSnapshots(record.TopLevel, found.Start, found.End), null);
+            return new RoundSnapshotsResult(new RoundSnapshots(git, found.Start, found.End), null);
         }
         finally
         {
@@ -575,8 +581,8 @@ public sealed class WorkReviewTracker
                 var lastActivity = record.Rounds.Select(r => r.EndedAt ?? r.StartedAt).DefaultIfEmpty(DateTimeOffset.MinValue).Max();
                 if (lastActivity >= cutoff || record.Rounds.Any(r => _open.Values.Any(o => o.ReviewId == reviewId && o.Round == r.Round)))
                     continue;
-                if (Directory.Exists(record.TopLevel))
-                    await WorkReviewGit.DeleteRefsAsync(record.TopLevel, reviewId, ct);
+                if (Directory.Exists(GitDirectory(record)))
+                    await WorkReviewGit.DeleteRefsAsync(GitDirectory(record), reviewId, ct);
                 File.Delete(file);
                 if (Directory.Exists(CapturesFolder(reviewId)))
                     Directory.Delete(CapturesFolder(reviewId), recursive: true);
@@ -779,6 +785,10 @@ public sealed class WorkReviewTracker
         PrivateFiles.WriteAllText(tmp, JsonSerializer.Serialize(record, RecordJson));
         File.Move(tmp, path, overwrite: true);
     }
+
+    /// <summary>Where git reads the photos of <paramref name="record"/>: its folder, else the agent's repository.</summary>
+    private string GitDirectory(WorkReviewRecord record) =>
+        Directory.Exists(record.TopLevel) || _repositoryDirectory is null ? record.TopLevel : _repositoryDirectory;
 
     private static bool IsWithin(string topLevel, string path)
     {

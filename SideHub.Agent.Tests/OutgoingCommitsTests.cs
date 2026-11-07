@@ -216,7 +216,7 @@ public sealed class OutgoingCommitsTests : IDisposable
             return;
         CloneWithRemote();
         var sent = new List<GitOutgoingMessage>();
-        using var reporter = new OutgoingCommitsReporter(Work, (message, _) =>
+        using var reporter = new OutgoingCommitsReporter(() => (Work, false), (message, _) =>
         {
             sent.Add(message);
             return Task.FromResult(true);

@@ -43,6 +43,12 @@ public sealed record GitOutgoingMessage
     [JsonPropertyName("commitsTruncated")]
     public bool CommitsTruncated { get; init; }
 
+    /// <summary>The queue's worktree the commits are in (doc 71), absolute path; null when they are in the agent's
+    /// folder. A tab opened there (to integrate before a push) works on them.</summary>
+    [JsonPropertyName("workTree")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorkTree { get; init; }
+
     /// <summary><see cref="OutgoingErrors"/>; null when the state was read (<see cref="Ahead"/> may be 0).</summary>
     [JsonPropertyName("error")]
     public string? Error { get; init; }

@@ -6,10 +6,11 @@ namespace SideHub.Agent.Outgoing;
 /// <summary>
 /// Keeps the backend told which commits of the agent's branch are not pushed (<c>git.outgoing</c>): at each connection,
 /// every <see cref="PollInterval"/> when it changed (commits made or pushed by hand), after a task is done and after a
-/// push. Pushes one at a time (<c>git.push.request</c>).
+/// push. Pushes one at a time (<c>git.push.request</c>). The commits are read in <paramref name="place"/>'s folder: the
+/// queue's worktree once there is one (doc 71), else the agent's folder.
 /// </summary>
 public sealed class OutgoingCommitsReporter(
-    string directory,
+    Func<(string Directory, bool QueueWorktree)> place,
     Func<GitOutgoingMessage, CancellationToken, Task<bool>> send,
     Action<string> log) : IDisposable
 {
@@ -59,7 +60,10 @@ public sealed class OutgoingCommitsReporter(
         await _refreshLock.WaitAsync(ct);
         try
         {
+            var (directory, queueWorktree) = place();
             var state = await OutgoingCommitsReader.ReadAsync(directory, ct);
+            if (queueWorktree)
+                state = state with { WorkTree = directory };
             var json = JsonSerializer.Serialize(state);
             if (json == _lastSent)
                 return;
@@ -79,7 +83,7 @@ public sealed class OutgoingCommitsReporter(
         await _pushLock.WaitAsync(ct);
         try
         {
-            var result = await OutgoingCommitsReader.PushAsync(directory, head, ct);
+            var result = await OutgoingCommitsReader.PushAsync(place().Directory, head, ct);
             log($"Push of {result.Branch ?? "HEAD"} to {result.Remote ?? "?"}: {result.Error ?? "pushed"}");
             try { await RefreshAsync(ct); }
             catch (Exception ex) when (ex is not OperationCanceledException) { log($"Outgoing commits not read after the push: {ex.Message}"); }

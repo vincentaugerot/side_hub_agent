@@ -102,7 +102,7 @@ public static partial class OutgoingCommitsReader
         new() { Branch = branch, Error = error };
 
     /// <summary>The branch's upstream on a remote (a local upstream, remote ".", does not count).</summary>
-    private static async Task<(string Ref, string Remote, string RemoteBranch)?> UpstreamAsync(string directory, string branch, CancellationToken ct)
+    internal static async Task<(string Ref, string Remote, string RemoteBranch)?> UpstreamAsync(string directory, string branch, CancellationToken ct)
     {
         // A pattern also matches the refs below it (refs/heads/feat matches refs/heads/feat/x): the line is picked by name.
         var refName = $"refs/heads/{branch}";

@@ -106,6 +106,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly WorkReviewTracker _reviews;
     // Where peer review runs read the end of the reviewed round, one disposable worktree per run.
     private readonly PeerReviewCheckout _peerReviews;
+    // Where the tasks of the queue run (doc 71), out of the folder the user works in.
+    private readonly QueueWorktree _queueWorktree;
     // The commits of the agent's branch not pushed yet (git.outgoing), and the push confirmed from SideHub.
     private readonly OutgoingCommitsReporter _outgoing;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
@@ -188,9 +190,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _questionCheckout = new QuestionCheckout(_fifoAgentKey, Log);
         _reviews = new WorkReviewTracker(Path.Combine(runDir, "reviews"), _fifoAgentKey,
             new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
-            _usageCollector.ReadFinalMessage, Log, ReadSeenImages);
+            _usageCollector.ReadFinalMessage, Log, ReadSeenImages, workingDirectory);
         _peerReviews = new PeerReviewCheckout(_fifoAgentKey, _reviews, Log);
-        _outgoing = new OutgoingCommitsReporter(workingDirectory, TrySendAsync, Log);
+        _queueWorktree = new QueueWorktree(_fifoAgentKey, Log);
+        // The queue's work is pushed from its worktree once there is one; before, from the agent's folder.
+        _outgoing = new OutgoingCommitsReporter(
+            () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false), TrySendAsync, Log);
         foreach (var (provider, harvester) in sessionHarvesters)
             _lastMessageReaders[provider] = harvester;
         _cliSessionUsage = new CliSessionUsageCollector(
@@ -2379,6 +2384,22 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 Log($"PTY {ptySessionId} reviews a round from {cwd} at {checkout.CommitSha}");
             }
 
+            // A task of the agent's queue runs in the queue's worktree (doc 71), never in the folder the user works in:
+            // its review shows its changes alone. So does a tab opened on the queue's work ("Intégrer et pousser").
+            // Without a usable worktree, in the agent's folder as before.
+            PreparedWorktree? worktree = null;
+            if (checkout is null && message.AdditionalEnv?.GetValueOrDefault(QueueWorktree.PlaceVariable) == QueueWorktree.QueuePlace)
+            {
+                worktree = await _queueWorktree.PrepareAsync(_workingDirectory, ct);
+                if (worktree is not null)
+                {
+                    cwd = worktree.Path;
+                    foreach (var (key, value) in _queueWorktree.TerminalEnvironment(Path.GetFullPath(_workingDirectory), worktree.Setup))
+                        ptyEnv[key] = value;
+                    Log($"PTY {ptySessionId} runs a queued task in {cwd} ({worktree.Branch})");
+                }
+            }
+
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
             // CLI launched from this terminal discovers sidehub-cli automatically. Not for a question or peer review
             // run: its read-only CLI cannot run sidehub-cli, and the excludes would land in the developer's repository.
@@ -2460,6 +2481,17 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is { } runId)
                     _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId], checkout);
                 StartFifoReader(ptySessionId, ct);
+                // The worktree's setup runs first: the shell reads the CLI's line, typed after pty.started, once it ends.
+                if (worktree?.Setup is not null)
+                {
+                    if (QueueWorktree.SetupLine(shell) is { } setupLine)
+                    {
+                        await executor.WriteAsync(setupLine, ct);
+                        Log($"PTY {ptySessionId} sets up the queue worktree first");
+                    }
+                    else
+                        Log($"PTY {ptySessionId}: the queue worktree setup is not run by {shell}");
+                }
                 await SendAsync(session.StartedMessage(ptySessionId, reattached: false), ct);
                 Log($"PTY session {ptySessionId} started");
             }
