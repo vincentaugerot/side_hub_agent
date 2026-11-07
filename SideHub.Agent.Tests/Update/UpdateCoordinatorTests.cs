@@ -5,7 +5,7 @@ namespace SideHub.Agent.Tests.Update;
 
 /// <summary>
 /// The daemons of a machine agree, through files, on when the updater may run: when none of them is busy, or at
-/// once when asked "now".
+/// once when asked "now" (after every daemon said what it cuts, and the turns of queued tasks ended or 2 min passed).
 /// </summary>
 public class UpdateCoordinatorTests : IDisposable
 {
@@ -18,6 +18,7 @@ public class UpdateCoordinatorTests : IDisposable
     private readonly string _project;
     private readonly string _updates;
     private bool _launchSucceeds = true;
+    private DateTime _now = DateTime.UtcNow;
 
     public UpdateCoordinatorTests()
     {
@@ -44,7 +45,8 @@ public class UpdateCoordinatorTests : IDisposable
                 return _launchSucceeds;
             },
             runningInstances: _ => _instances,
-            currentVersion: "1.0.90");
+            currentVersion: "1.0.90",
+            utcNow: () => _now);
         coordinator.Attach(_client);
         return coordinator;
     }
@@ -142,6 +144,97 @@ public class UpdateCoordinatorTests : IDisposable
         Assert.Single(_launched);
         Assert.Contains("Update forced (machine busy: queued-task, run): launching the updater to 1.0.91", _logs);
         Assert.DoesNotContain(_logs, line => line.StartsWith("Machine idle", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Mode_now_waits_for_the_other_daemons_to_say_what_it_cuts()
+    {
+        var other = _temp.Combine("other-project");
+        _instances.Add(new AgentInstance(other, 424242, Supervised: true));
+        using var coordinator = Coordinator();
+
+        await coordinator.RequestAsync(_client, "r1", "1.0.91", "v1.0.91", UpdateModes.Now, CancellationToken.None);
+        Assert.Empty(_launched);
+
+        // The other daemon saw the request at its tick: its task shows in the log and in the update's detail
+        _now += TimeSpan.FromSeconds(5);
+        UpdateFiles.Write(UpdateFiles.ActivityPath(other),
+            new InstanceActivity(424242, true, ["queued-task"], _now, [new OpenTask("task-b", InTurn: false)]));
+        await coordinator.TickAsync();
+
+        Assert.Single(_launched);
+        Assert.Contains("Update forced (machine busy: queued-task; tasks cut: task-b): launching the updater to 1.0.91", _logs);
+        Assert.Equal("machine busy: queued-task; tasks cut: task-b", _client.Sent[^1].Detail);
+    }
+
+    [Fact]
+    public async Task Mode_now_goes_without_a_silent_daemon_after_the_report_grace()
+    {
+        _instances.Add(new AgentInstance(_temp.Combine("other-project"), 424242, Supervised: true));
+        using var coordinator = Coordinator();
+        await coordinator.RequestAsync(_client, "r1", "1.0.91", "v1.0.91", UpdateModes.Now, CancellationToken.None);
+
+        _now += UpdateCoordinator.ReportGrace;
+        await coordinator.TickAsync();
+
+        Assert.Single(_launched);
+        Assert.Contains($"Update forced (machine busy: {UpdateCoordinator.UnresponsiveReason}): launching the updater to 1.0.91", _logs);
+    }
+
+    [Fact]
+    public async Task Mode_now_waits_for_the_turn_of_a_queued_task_to_end()
+    {
+        _client.Busy = ["cli-working", "queued-task"];
+        _client.Tasks = [new OpenTask("task-a", InTurn: true)];
+        using var coordinator = Coordinator();
+
+        await coordinator.RequestAsync(_client, "r1", "1.0.91", "v1.0.91", UpdateModes.Now, CancellationToken.None);
+        _now += TimeSpan.FromSeconds(30);
+        await coordinator.TickAsync();
+
+        Assert.Empty(_launched);
+        Assert.Equal(UpdateStates.WaitingIdle, _client.States[^1]);
+        Assert.Equal(["cli-working", "queued-task"], _client.Sent[^1].BusyReasons);
+        Assert.Single(_logs, line => line == "Update to 1.0.91 forced: waiting up to 2 min for the turn of task(s) task-a to end");
+
+        _client.Busy = ["queued-task"];
+        _client.Tasks = [new OpenTask("task-a", InTurn: false)];
+        await coordinator.OnTaskTurnEndedAsync();
+
+        Assert.Single(_launched);
+        Assert.Contains("Update forced (machine busy: queued-task; tasks cut: task-a): launching the updater to 1.0.91", _logs);
+    }
+
+    [Fact]
+    public async Task Mode_now_cuts_a_turn_that_lasts_more_than_the_turn_grace()
+    {
+        _client.Busy = ["cli-working", "queued-task"];
+        _client.Tasks = [new OpenTask("task-a", InTurn: true)];
+        using var coordinator = Coordinator();
+        await coordinator.RequestAsync(_client, "r1", "1.0.91", "v1.0.91", UpdateModes.Now, CancellationToken.None);
+
+        _now += UpdateCoordinator.TurnGrace;
+        await coordinator.TickAsync();
+
+        Assert.Single(_launched);
+        Assert.Contains("Update forced (machine busy: cli-working, queued-task; tasks cut: task-a (in turn)): launching the updater to 1.0.91", _logs);
+    }
+
+    [Fact]
+    public async Task Now_asked_while_waiting_also_waits_for_the_turn()
+    {
+        _client.Busy = ["cli-working", "queued-task"];
+        _client.Tasks = [new OpenTask("task-a", InTurn: true)];
+        using var coordinator = Coordinator();
+        await coordinator.RequestAsync(_client, "r1", "1.0.91", "v1.0.91", null, CancellationToken.None);
+        _now += TimeSpan.FromMinutes(10);
+
+        await coordinator.NowAsync("r1");
+        Assert.Empty(_launched);
+
+        _now += UpdateCoordinator.TurnGrace;
+        await coordinator.TickAsync();
+        Assert.Single(_launched);
     }
 
     [Fact]
@@ -267,10 +360,13 @@ public class UpdateCoordinatorTests : IDisposable
     {
         public bool IsConnected { get; set; } = true;
         public List<string> Busy { get; set; } = [];
+        public List<OpenTask> Tasks { get; set; } = [];
         public List<AgentUpdateStatusMessage> Sent { get; } = [];
         public List<string> States => Sent.Select(m => m.State).ToList();
 
         public IReadOnlyList<string> BusyReasons() => Busy;
+
+        public IReadOnlyList<OpenTask> OpenTasks() => Tasks;
 
         public Task<bool> SendUpdateStatusAsync(AgentUpdateStatusMessage message, CancellationToken ct)
         {

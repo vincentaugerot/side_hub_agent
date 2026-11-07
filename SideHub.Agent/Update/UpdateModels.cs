@@ -60,8 +60,14 @@ public sealed record UpdateOutcome(string RequestId, string Version, string Stat
     public bool IsFinished => State is UpdateStates.Succeeded or UpdateStates.RolledBack or UpdateStates.Failed;
 }
 
-/// <summary><c>&lt;project&gt;/.sidehub/run/activity.json</c>, written by each daemon while an update is pending.</summary>
-public sealed record InstanceActivity(int Pid, bool Busy, IReadOnlyList<string> Reasons, DateTime At);
+/// <summary>
+/// <c>&lt;project&gt;/.sidehub/run/activity.json</c>, written by each daemon while an update is pending. <c>Tasks</c>: the
+/// tasks still open in its terminals (absent from an agent older than 1.0.132).
+/// </summary>
+public sealed record InstanceActivity(int Pid, bool Busy, IReadOnlyList<string> Reasons, DateTime At, IReadOnlyList<OpenTask>? Tasks = null);
+
+/// <summary>A task whose terminal has not called <c>sidehub-cli task done</c> yet; <c>InTurn</c>: its CLI is working.</summary>
+public sealed record OpenTask(string TaskId, bool InTurn);
 
 /// <summary><c>&lt;project&gt;/.sidehub/run/health.json</c>, written by each daemon once its startup checks ran: the
 /// updater waits for it to decide whether the new version works.</summary>

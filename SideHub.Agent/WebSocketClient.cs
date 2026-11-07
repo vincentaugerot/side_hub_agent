@@ -39,8 +39,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
     // Secret each PTY's notification lines must carry (NotifyFifo.SecretVariable), minted at spawn
     private readonly ConcurrentDictionary<string, string> _ptyNotifySecrets = new();
-    // PTYs opened for a task (SIDEHUB_TASK_ID) that has not called `sidehub-cli task done` yet: they hold an update
-    private readonly ConcurrentDictionary<string, byte> _ptyOpenTasks = new();
+    // PTYs opened for a task (SIDEHUB_TASK_ID) that has not called `sidehub-cli task done` yet, with its id: they hold an update
+    private readonly ConcurrentDictionary<string, string> _ptyOpenTasks = new();
     private readonly McpSecretsFiles _mcpSecretsFiles;
     // Real-path cwd of each PTY session, needed to locate Claude's project JSONL
     // for the ai-title watcher.
@@ -638,8 +638,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         // A new turn: a limit reported before is behind it, the next one is sent even if it reads the same
         if (changed.State == CliStates.Working)
             _cliLimits.TryRemove(ptySessionId, out _);
+        var wasWorking = _cliStates.Current(ptySessionId)?.State == CliStates.Working;
         if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow, changed.Prompt) is not { } message)
             return;
+        // A "now" update may be holding for this turn: it goes before the task's next turn starts
+        if (wasWorking && changed.State != CliStates.Working && _updates is not null && _ptyOpenTasks.ContainsKey(ptySessionId))
+            RunInBackground("update check", _updates.OnTaskTurnEndedAsync);
         // The prompt's content stays out of the log (it can hold a command line): only its kind
         Log($"CLI state in PTY {ptySessionId}: {changed.State}{(changed.Prompt is { } p ? $" ({p.Kind})" : "")} (provider={changed.Provider} cliSessionId={changed.CliSessionId ?? "(unknown)"})");
         if (changed.State == CliStates.Working && _ptyCwd.TryGetValue(ptySessionId, out var workingIn))
@@ -1845,6 +1849,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         return reasons;
     }
 
+    /// <summary>The tasks open in the live terminals, and whether their CLI is in the middle of a turn.</summary>
+    public IReadOnlyList<OpenTask> OpenTasks() =>
+        _ptyOpenTasks
+            .Where(t => _ptySessions.TryGetValue(t.Key, out var session) && session.Executor.IsRunning)
+            .Select(t => new OpenTask(t.Value, _cliStates.Current(t.Key)?.State == CliStates.Working))
+            .ToList();
+
     private void RunInBackground(string label, Func<Task> work)
     {
         _ = Task.Run(async () =>
@@ -2441,8 +2452,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 var session = new PtySession(executor, shell, startedAt);
                 _ptySessions[ptySessionId] = session;
                 _ptySecrets[ptySessionId] = (message.AdditionalEnv, message.SecretKeys);
-                if (!string.IsNullOrEmpty(message.AdditionalEnv?.GetValueOrDefault(TaskIdVariable)))
-                    _ptyOpenTasks[ptySessionId] = 0;
+                if (message.AdditionalEnv?.GetValueOrDefault(TaskIdVariable) is { Length: > 0 } taskId)
+                    _ptyOpenTasks[ptySessionId] = taskId;
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }

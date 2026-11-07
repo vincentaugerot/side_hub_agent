@@ -12,6 +12,9 @@ public interface IUpdateClient
     /// <summary>Why updating now would cut work in progress ("run", "cli-working"…); empty when idle.</summary>
     IReadOnlyList<string> BusyReasons();
 
+    /// <summary>The tasks still open in its terminals, and whether their CLI is in the middle of a turn.</summary>
+    IReadOnlyList<OpenTask> OpenTasks();
+
     Task<bool> SendUpdateStatusAsync(AgentUpdateStatusMessage message, CancellationToken ct);
 }
 
@@ -20,11 +23,24 @@ public interface IUpdateClient
 /// waits with the other daemons of the machine until none is busy and launches the updater
 /// (<c>sidehub-agent update apply</c>, see <see cref="UpdateApplier"/>). The daemons coordinate through files in
 /// <c>~/.sidehub/update/</c>, without the backend: whichever daemon first sees the whole machine idle launches the
-/// updater, guarded by <c>apply.lock</c>.
+/// updater, guarded by <c>apply.lock</c>. "Now" does not wait for an idle machine, only for every daemon to report what
+/// it cuts (<see cref="ReportGrace"/>) and for the CLIs of queued tasks to end their turn (<see cref="TurnGrace"/>).
 /// </summary>
 public sealed class UpdateCoordinator : IDisposable
 {
     public static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(15);
+    /// <summary>The pace of the ticks while "now" holds: the end of a turn is seen within seconds.</summary>
+    public static readonly TimeSpan HoldTickInterval = TimeSpan.FromSeconds(3);
+    /// <summary>
+    /// "Now" waits this long for the other daemons to write their activity: they see the pending update at their next
+    /// tick (<see cref="TickInterval"/>), and until then their work would read as <see cref="UnresponsiveReason"/>.
+    /// </summary>
+    public static readonly TimeSpan ReportGrace = TimeSpan.FromSeconds(20);
+    /// <summary>
+    /// "Now" waits this long for the CLIs of queued tasks to be between two turns: a turn cut by the restart is lost, its
+    /// task is resumed with a new prompt.
+    /// </summary>
+    public static readonly TimeSpan TurnGrace = TimeSpan.FromMinutes(2);
     /// <summary>An activity file older than this says nothing: its daemon stopped ticking.</summary>
     private static readonly TimeSpan ActivityFreshness = TimeSpan.FromSeconds(45);
     /// <summary>A lock whose process is gone for this long means the updater died.</summary>
@@ -39,10 +55,15 @@ public sealed class UpdateCoordinator : IDisposable
     private readonly Func<PendingUpdate, string, bool> _launchUpdater;
     private readonly Func<string, List<AgentInstance>> _runningInstances;
     private readonly string _currentVersion;
+    private readonly Func<DateTime> _utcNow;
     private readonly ConcurrentDictionary<IUpdateClient, byte> _clients = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Timer? _timer;
     private string? _lastWaitingReport;
+    // When this daemon first saw the pending request in "now" mode: the start of its holds
+    private (string RequestId, DateTime Since)? _forcedSince;
+    private string? _lastHold;
+    private bool _holdPace;
     private CancellationToken _ct;
 
     public SelfUpdateSupport Support { get; }
@@ -50,7 +71,7 @@ public sealed class UpdateCoordinator : IDisposable
     public UpdateCoordinator(string projectDirectory, Action<string> log, SelfUpdateSupport? support = null,
         string? updateDirectory = null, Func<string, string, string, CancellationToken, Task<string>>? stage = null,
         Func<PendingUpdate, string, bool>? launchUpdater = null, Func<string, List<AgentInstance>>? runningInstances = null,
-        string? currentVersion = null)
+        string? currentVersion = null, Func<DateTime>? utcNow = null)
     {
         _projectDirectory = Path.GetFullPath(projectDirectory);
         _log = log;
@@ -60,6 +81,7 @@ public sealed class UpdateCoordinator : IDisposable
         _launchUpdater = launchUpdater ?? LaunchUpdater;
         _runningInstances = runningInstances ?? AgentInstances.Running;
         _currentVersion = currentVersion ?? VersionInfo.AgentVersion;
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
     private string PendingPath => UpdateFiles.PendingPath(_updateDirectory);
@@ -144,7 +166,7 @@ public sealed class UpdateCoordinator : IDisposable
                 }
                 UpdateFiles.Delete(OutcomePath);
                 UpdateFiles.Write(PendingPath, new PendingUpdate(requestId, version, installDirectory, staging, mode,
-                    DateTime.UtcNow, Environment.ProcessId));
+                    _utcNow(), Environment.ProcessId));
                 _lastWaitingReport = null;
                 _log($"Update to {version} staged in {staging}");
             }
@@ -200,6 +222,9 @@ public sealed class UpdateCoordinator : IDisposable
     /// <summary>A connection (re)opened: report how an update ended, if no daemon did yet.</summary>
     public Task OnConnectedAsync() => TickSafeAsync();
 
+    /// <summary>The CLI of a task ended its turn: an update held for it can go now, before the next turn starts.</summary>
+    public Task OnTaskTurnEndedAsync() => File.Exists(PendingPath) ? TickSafeAsync() : Task.CompletedTask;
+
     private async Task TickSafeAsync()
     {
         try { await TickAsync(); }
@@ -218,25 +243,42 @@ public sealed class UpdateCoordinator : IDisposable
             if (pending is null || pending.InstallDirectory != Support.InstallDirectory)
             {
                 UpdateFiles.Delete(activityPath);
+                Pace(hold: false);
                 return;
             }
 
             var ownReasons = OwnBusyReasons();
-            UpdateFiles.Write(activityPath, new InstanceActivity(Environment.ProcessId, ownReasons.Count > 0, ownReasons, DateTime.UtcNow));
+            var ownTasks = OwnTasks();
+            UpdateFiles.Write(activityPath, new InstanceActivity(Environment.ProcessId, ownReasons.Count > 0, ownReasons, _utcNow(), ownTasks));
             if (IsApplying)
             {
+                Pace(hold: false);
                 ClearStaleLock(pending);
                 return;
             }
 
-            var busy = MachineBusyReasons(pending.InstallDirectory, ownReasons);
-            if (pending.Mode == UpdateModes.Now || busy.Count == 0)
+            var machine = MachineActivity(pending.InstallDirectory, ownReasons, ownTasks);
+            var busy = machine.Reasons;
+            if (busy.Count == 0)
             {
-                // "Now" skips the wait: the log says what it cuts, so a stopped task is not taken for an idle machine
-                await LaunchAsync(pending, busy.Count == 0
-                    ? "Machine idle"
-                    : $"Update forced (machine busy: {string.Join(", ", busy)})");
+                Pace(hold: false);
+                await LaunchAsync(pending, "Machine idle");
                 return;
+            }
+            if (pending.Mode == UpdateModes.Now)
+            {
+                var hold = ForcedHold(pending, machine);
+                Pace(hold is not null);
+                if (hold is null)
+                {
+                    // The log and the update's detail say what it cuts, so a stopped task is not taken for an idle machine
+                    var cut = DescribeCut(machine);
+                    await LaunchAsync(pending, $"Update forced ({cut})", cut);
+                    return;
+                }
+                if (hold != _lastHold)
+                    _log($"Update to {pending.Version} forced: {hold}");
+                _lastHold = hold;
             }
             // The daemon that received the request reports what the machine waits for, when it changes
             var report = string.Join(",", busy);
@@ -253,24 +295,76 @@ public sealed class UpdateCoordinator : IDisposable
     private List<string> OwnBusyReasons() =>
         _clients.Keys.SelectMany(client => client.BusyReasons()).Distinct().Order(StringComparer.Ordinal).ToList();
 
+    private List<OpenTask> OwnTasks() => _clients.Keys.SelectMany(client => client.OpenTasks()).ToList();
+
+    private sealed record Machine(List<string> Reasons, List<OpenTask> Tasks, bool Unresponsive);
+
     /// <summary>What keeps the daemons of this installation busy, from their activity files (ours from memory).</summary>
-    private List<string> MachineBusyReasons(string installDirectory, List<string> ownReasons)
+    private Machine MachineActivity(string installDirectory, List<string> ownReasons, List<OpenTask> ownTasks)
     {
         var reasons = new SortedSet<string>(ownReasons, StringComparer.Ordinal);
+        var tasks = new List<OpenTask>(ownTasks);
+        var unresponsive = false;
         foreach (var instance in _runningInstances(installDirectory))
         {
             if (instance.Pid == Environment.ProcessId)
                 continue;
             var activity = UpdateFiles.Read<InstanceActivity>(UpdateFiles.ActivityPath(instance.Directory));
-            if (activity is null || activity.Pid != instance.Pid || DateTime.UtcNow - activity.At > ActivityFreshness)
-                reasons.Add(UnresponsiveReason); // an older agent, or one that stopped ticking: "Now" overrides it
+            if (activity is null || activity.Pid != instance.Pid || _utcNow() - activity.At > ActivityFreshness)
+            {
+                unresponsive = true; // an older agent, one that stopped ticking, or one that did not see the request yet
+                reasons.Add(UnresponsiveReason);
+            }
             else
+            {
                 reasons.UnionWith(activity.Reasons);
+                tasks.AddRange(activity.Tasks ?? []);
+            }
         }
-        return reasons.ToList();
+        return new Machine(reasons.ToList(), tasks, unresponsive);
     }
 
-    private async Task LaunchAsync(PendingUpdate pending, string why)
+    /// <summary>What "now" still waits for (null: launch): every daemon's report, then the end of the tasks' turns.</summary>
+    private string? ForcedHold(PendingUpdate pending, Machine machine)
+    {
+        var now = _utcNow();
+        if (_forcedSince is not { } forced || forced.RequestId != pending.RequestId)
+            _forcedSince = forced = (pending.RequestId, now);
+        var waited = now - forced.Since;
+        if (machine.Unresponsive && waited < ReportGrace)
+            return $"waiting up to {ReportGrace.TotalSeconds:0} s for the other agents to say what they are doing";
+        var inTurn = machine.Tasks.Where(t => t.InTurn).Select(t => t.TaskId).Distinct().ToList();
+        if (inTurn.Count > 0 && waited < TurnGrace)
+            return $"waiting up to {TurnGrace.TotalMinutes:0} min for the turn of task(s) {string.Join(", ", inTurn)} to end";
+        return null;
+    }
+
+    /// <summary>"machine busy: queued-task, run; tasks cut: a (in turn), b": the reasons, then the tasks restarted.</summary>
+    private static string DescribeCut(Machine machine)
+    {
+        var text = $"machine busy: {string.Join(", ", machine.Reasons)}";
+        var tasks = machine.Tasks.GroupBy(t => t.TaskId)
+            .Select(g => g.Any(t => t.InTurn) ? $"{g.Key} (in turn)" : g.Key).ToList();
+        return tasks.Count == 0 ? text : $"{text}; tasks cut: {string.Join(", ", tasks)}";
+    }
+
+    /// <summary>Ticks faster while "now" holds, back to <see cref="TickInterval"/> otherwise.</summary>
+    private void Pace(bool hold)
+    {
+        if (hold == _holdPace)
+            return;
+        _holdPace = hold;
+        if (!hold)
+        {
+            _forcedSince = null;
+            _lastHold = null;
+        }
+        var interval = hold ? HoldTickInterval : TickInterval;
+        try { _timer?.Change(interval, interval); }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task LaunchAsync(PendingUpdate pending, string why, string? detail = null)
     {
         try
         {
@@ -284,7 +378,7 @@ public sealed class UpdateCoordinator : IDisposable
         }
 
         _log($"{why}: launching the updater to {pending.Version}");
-        await SendAsync(new AgentUpdateStatusMessage { RequestId = pending.RequestId, Version = pending.Version, State = UpdateStates.Applying });
+        await SendAsync(new AgentUpdateStatusMessage { RequestId = pending.RequestId, Version = pending.Version, State = UpdateStates.Applying, Detail = detail });
         if (_launchUpdater(pending, _projectDirectory))
             return;
 
