@@ -55,8 +55,11 @@ public static class LaunchCommand
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable),
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable));
         var declinedMcp = unattended ? DeclinedProjectMcpServers() : null;
+        var runId = Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable);
+        var taskId = Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable);
+        var unattendedCodex = CodexWorkspaceTrust.Applies(cli, args[1..], runId, taskId);
         var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, nested ? null : StateReporting(cli), McpSetup(cli, warnings),
-            ToolPolicy(), declinedMcp, MachineMcpHook());
+            ToolPolicy(), declinedMcp, MachineMcpHook(), unattended: unattendedCodex);
         if (plan.Refusal is { } refusal)
         {
             Console.Error.WriteLine($"sidehub-cli launch: {refusal}");
@@ -67,10 +70,12 @@ public static class LaunchCommand
 
         if (unattended)
             TrustWorkspace();
-        if (AntigravityWorkspaceTrust.Applies(cli, args[1..],
-                Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable),
-                Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable)))
+        if (AntigravityWorkspaceTrust.Applies(cli, args[1..], runId, taskId))
             TrustAntigravityWorkspace();
+        if (unattendedCodex)
+            TrustRepository("codex", CodexWorkspaceTrust.ConfigPath(), CodexWorkspaceTrust.Accept);
+        if (CopilotWorkspaceTrust.Applies(cli, args[1..], runId, taskId))
+            TrustRepository("copilot", CopilotWorkspaceTrust.ConfigPath(), CopilotWorkspaceTrust.Accept);
         if (plan.AntigravityHooks && HookProgram() is { } hookProgram)
             InstallAntigravityHooks(hookProgram);
 
@@ -182,6 +187,22 @@ public static class LaunchCommand
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
             Console.Error.WriteLine($"sidehub-cli launch: agy may ask whether to trust this folder: {ex.Message}");
+        }
+    }
+
+    /// <summary>Best effort: without it, <paramref name="cli"/> asks whether to trust the repository and someone answers
+    /// in the terminal. The repository is the one codex and copilot check (<see cref="GitTrustRoot"/>).</summary>
+    private static void TrustRepository(string cli, string? configPath, Func<string, string, bool> accept)
+    {
+        if (configPath is null)
+            return;
+        try
+        {
+            accept(configPath, GitTrustRoot.Of(Directory.GetCurrentDirectory()));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: {cli} may ask whether to trust this folder: {ex.Message}");
         }
     }
 

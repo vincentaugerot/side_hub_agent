@@ -152,6 +152,21 @@ public class CliLaunchTests : IDisposable
         Assert.True(plan.ReportLaunch);
     }
 
+    [Fact]
+    public void An_unattended_codex_starts_without_its_update_offer()
+    {
+        var plan = CliLaunchPlan.For("codex", ["--model", "m"], "do it", null, () => Minted, unattended: true);
+
+        Assert.Equal(["-c", CliLaunchPlan.CodexNoUpdateCheck, "-c", CliLaunchPlan.CodexInlineScreen, "--model", "m", "do it"],
+            plan.Arguments);
+    }
+
+    [Theory]
+    [InlineData("exec", "--json")]
+    [InlineData("-c", "check_for_update_on_startup=true")]
+    public void The_update_offer_is_left_to_codex_without_a_tui_and_to_the_caller(params string[] args) =>
+        Assert.DoesNotContain(CliLaunchPlan.CodexNoUpdateCheck, CliLaunchPlan.For("codex", args, null, null, () => Minted, unattended: true).Arguments);
+
     [Theory]
     [InlineData("exec", "--json")]
     [InlineData("e")]

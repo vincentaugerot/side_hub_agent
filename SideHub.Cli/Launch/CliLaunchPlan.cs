@@ -39,7 +39,11 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     };
 
     // codex subcommands without a TUI: no screen mode to choose.
-    private static readonly HashSet<string> HeadlessCodexSubcommands = ["exec", "e", "review"];
+    internal static readonly HashSet<string> HeadlessCodexSubcommands = ["exec", "e", "review"];
+
+    /// <summary>Turns off the update offer codex's TUI opens with when a new version is out: a choice nobody makes in
+    /// an unattended launch, which would wait on it.</summary>
+    public const string CodexNoUpdateCheck = "check_for_update_on_startup=false";
 
     /// <summary>
     /// codex's TUI runs inline, like claude's: in its alternate screen the terminal keeps no scrollback, so scrolling
@@ -68,9 +72,11 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// <param name="machineMcpHook">claude: the <c>sidehub-cli</c> (absolute path) whose hook allows the machine's MCP
     /// tools (see <see cref="PolicyAllowCommand"/>), null to leave them to claude's permission mode. Ignored under a
     /// tool policy, which checks them call by call.</param>
+    /// <param name="unattended">Launched by SideHub for a run or a task, with nobody to answer yet: codex's TUI starts
+    /// without its update offer (<see cref="CodexNoUpdateCheck"/>).</param>
     public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion,
         Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null, ToolPolicy? toolPolicy = null,
-        IReadOnlyList<string>? declinedProjectMcpServers = null, string? machineMcpHook = null)
+        IReadOnlyList<string>? declinedProjectMcpServers = null, string? machineMcpHook = null, bool unattended = false)
     {
         if (!KnownClis.Contains(cli))
             throw new ArgumentException($"Unknown CLI '{cli}'.", nameof(cli));
@@ -99,6 +105,9 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         if (cli == "codex" && startsConversation && !(args.Count > 0 && HeadlessCodexSubcommands.Contains(args[0]))
             && !args.Contains("--no-alt-screen") && !SetsCodexConfig(args, "tui.alternate_screen"))
             args.InsertRange(0, ["-c", CodexInlineScreen]);
+        if (cli == "codex" && unattended && startsConversation && !(args.Count > 0 && HeadlessCodexSubcommands.Contains(args[0]))
+            && !SetsCodexConfig(args, "check_for_update_on_startup"))
+            args.InsertRange(0, ["-c", CodexNoUpdateCheck]);
 
         // A command that starts no conversation runs no tool: the policy has nothing to check.
         var refusal = startsConversation && toolPolicy is not null ? ToolPolicyRefusal(cli, args, toolPolicy) : null;

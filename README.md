@@ -100,7 +100,12 @@ agent's own repository), and the project MCP servers (`.mcp.json` in the folder 
 on yet are started without, through `--settings` `disabledMcpjsonServers` for this launch only. A server
 you enabled or disabled keeps your decision; no file of the repository is written. An interactive agy
 started the same way gets its folder added to `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`
-(agy asks for each folder: trusting a parent does not cover it).
+(agy asks for each folder: trusting a parent does not cover it). codex and copilot ask too, codex even with
+`--dangerously-bypass-approvals-and-sandbox`; both check the main working tree of the repository, also from a
+sub-folder or a linked worktree, so that folder is the one marked: a `[projects."<folder>"] trust_level =
+"trusted"` table appended to `~/.codex/config.toml` (`$CODEX_HOME`), unless the file already names the folder
+(your decision stands), and `trustedFolders` in `~/.copilot/config.json` (`$COPILOT_HOME`). An unattended codex
+TUI also starts with `-c check_for_update_on_startup=false`, so that it does not wait on its update offer.
 
 **`cli-wrappers/`** (Linux, macOS): the agent puts small `claude` / `codex` / `gemini` / `copilot` / `agy`
 wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
