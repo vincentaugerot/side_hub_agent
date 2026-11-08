@@ -90,6 +90,10 @@ public class AgentConfig
 
         foreach (var file in configFiles.Order(StringComparer.Ordinal))
         {
+            // Not an agent config: the queue worktree's setup lives next to them (doc 71).
+            if (Path.GetFileName(file).Equals(QueueWorktree.ConfigFile, StringComparison.OrdinalIgnoreCase))
+                continue;
+
             var reason = PrivateFiles.UntrustedReason(file);
             if (reason is null && repository is not null && await repository.IsTrackedAsync(file))
                 reason = "it is tracked by git (a commit could point the agent to another backend); " +

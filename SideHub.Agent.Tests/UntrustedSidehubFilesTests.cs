@@ -68,6 +68,20 @@ public class UntrustedSidehubFilesTests : IDisposable
     }
 
     [Fact]
+    public async Task The_queue_worktree_setup_is_not_read_as_an_agent_config()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var local = WriteConfig("agent.json");
+        File.WriteAllText(Path.Combine(SidehubDir, QueueWorktree.ConfigFile), """{ "setup": "npm ci" }""");
+        var warnings = new List<string>();
+
+        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add, Tokens);
+
+        Assert.Equal(local, Assert.Single(configs).ConfigFilePath);
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
     public async Task Loading_fails_when_every_config_is_refused()
     {
         if (OperatingSystem.IsWindows()) return;
