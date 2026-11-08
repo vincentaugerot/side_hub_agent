@@ -82,6 +82,13 @@ public class AgentConnectedMessage
     /// <summary>Whether the agent can update itself on <c>agent.update</c>, and why not.</summary>
     [JsonPropertyName("selfUpdate")]
     public SelfUpdateInfo? SelfUpdate { get; init; }
+
+    /// <summary>
+    /// Whether the agent starts again once the machine restarts: a service or scheduled task runs it, or the boot entry
+    /// of <c>service install --all</c> (<see cref="AgentService.StartsAfterReboot"/>). Sent again when it changes.
+    /// </summary>
+    [JsonPropertyName("supervised")]
+    public bool Supervised { get; init; }
 }
 
 public class SelfUpdateInfo

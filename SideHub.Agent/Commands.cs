@@ -594,13 +594,15 @@ public static class Commands
         Console.WriteLine("    -d, --daemon  Run in background");
         Console.WriteLine("    --all         Restart all registered instances");
         Console.WriteLine("  service install Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)");
-        Console.WriteLine("  service uninstall / service status");
+        Console.WriteLine("    --all         One boot entry for every agent of this machine (start --all -d)");
+        Console.WriteLine("  service uninstall / service status [--all]");
         Console.WriteLine("  logs            Show agent logs");
         Console.WriteLine("    -f, --follow  Follow log output (default)");
         Console.WriteLine("    --no-follow   Don't follow, just print current logs");
         Console.WriteLine("  status          Show agent status");
         Console.WriteLine("    --all         Show all registered instances");
-        Console.WriteLine("  doctor          Show the coding CLIs the agent runs, whether they are logged in and how they are paid for");
+        Console.WriteLine("  doctor          Show the coding CLIs the agent runs, whether they are logged in and how they are paid for,");
+        Console.WriteLine("                  and the agents that won't start again after a reboot");
         Console.WriteLine("  version         Print the agent's version");
         Console.WriteLine("  help            Show this help");
         Console.WriteLine();
@@ -612,6 +614,7 @@ public static class Commands
         Console.WriteLine("  sidehub-agent              # Start in foreground");
         Console.WriteLine("  sidehub-agent start -d     # Start in background");
         Console.WriteLine("  sidehub-agent service install  # Start it again after a reboot");
+        Console.WriteLine("  sidehub-agent service install --all  # Same for every agent of this machine");
         Console.WriteLine("  sidehub-agent restart --all -d  # Restart all agents");
         Console.WriteLine("  sidehub-agent status --all # Show all instances");
         Console.WriteLine("  sidehub-agent logs         # View and follow logs");

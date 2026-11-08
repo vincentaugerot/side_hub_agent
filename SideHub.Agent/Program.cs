@@ -61,7 +61,7 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
         "restart" => await HandleRestart(args, baseDirectory, ct),
         "logs" => await HandleLogs(args, baseDirectory),
         "status" => HandleStatus(args, baseDirectory),
-        "doctor" => await CliReport.PrintAsync(ct),
+        "doctor" => await HandleDoctor(baseDirectory, ct),
         "service" => AgentService.Run(args, baseDirectory),
         "version" or "--version" => ShowVersion(),
         "update" when args.Length > 1 && args[1] == "apply" => await SideHub.Agent.Update.UpdateApplier.RunAsync(ct),
@@ -148,7 +148,15 @@ static async Task<int> SetupAndStart(string[] args, string baseDirectory, string
     if (code != 0) return code;
     // The install command ends on what the agent will run, and with which sign-in: no model key goes to SideHub
     Console.WriteLine();
-    return await CliReport.PrintAsync(ct);
+    return await HandleDoctor(baseDirectory, ct);
+}
+
+/// <summary>The CLIs the agent runs, then whether the agents come back after a reboot of the machine.</summary>
+static async Task<int> HandleDoctor(string baseDirectory, CancellationToken ct)
+{
+    var code = await CliReport.PrintAsync(ct);
+    AgentService.PrintRebootReport(baseDirectory);
+    return code;
 }
 
 static int HandleStop(string[] args, string baseDirectory)

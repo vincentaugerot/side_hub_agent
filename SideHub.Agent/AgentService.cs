@@ -11,23 +11,26 @@ namespace SideHub.Agent;
 /// current user, without a dedicated account. Linux: a systemd user unit, with lingering so that it runs without an
 /// open session. macOS: a LaunchAgent (runs once the user is logged in). Windows: a scheduled task at logon.
 /// systemd and launchd also restart the agent after a crash, so once installed they own the daemon: start, stop and
-/// restart go through them (<see cref="IsSupervised"/>), otherwise a stopped agent would come back.
+/// restart go through them (<see cref="IsSupervised"/>), otherwise a stopped agent would come back. With <c>--all</c>,
+/// one boot entry starts every registered agent of the machine instead (<see cref="InstallBoot"/>).
 /// </summary>
 public static partial class AgentService
 {
     public static int Run(string[] args, string baseDirectory)
     {
         var sub = args.Skip(1).FirstOrDefault(a => !a.StartsWith('-'));
+        var all = args.Contains("--all");
         switch (sub)
         {
-            case "install": return Install(baseDirectory);
-            case "uninstall": return Uninstall(baseDirectory);
-            case "status": return Status(baseDirectory);
+            case "install": return all ? InstallBoot() : Install(baseDirectory);
+            case "uninstall": return all ? UninstallBoot() : Uninstall(baseDirectory);
+            case "status": return all ? StatusBoot() : Status(baseDirectory);
             default:
-                Console.WriteLine("Usage: sidehub-agent service install|uninstall|status");
+                Console.WriteLine("Usage: sidehub-agent service install|uninstall|status [--all]");
                 Console.WriteLine("  install    Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)");
                 Console.WriteLine("  uninstall  Remove it");
                 Console.WriteLine("  status     Show whether it is installed and running");
+                Console.WriteLine("  --all      One entry for every agent of this machine (`start --all -d` at boot), not one per folder");
                 return sub is null ? 0 : 1;
         }
     }
@@ -48,6 +51,21 @@ public static partial class AgentService
     /// <summary>systemd (Linux) or launchd (macOS) runs this folder's agent: they restart it if it is killed.</summary>
     public static bool IsSupervised(string baseDirectory) =>
         (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) && File.Exists(DefinitionPath(baseDirectory));
+
+    /// <summary>
+    /// Whether this folder's agent starts again once the machine restarts: its own service or scheduled task, or the
+    /// boot entry of <c>service install --all</c> while the folder is registered (<see cref="InstanceRegistry"/>). On
+    /// Linux a systemd user unit only runs at boot with lingering. Reported in <c>agent.connected.supervised</c>.
+    /// </summary>
+    public static bool StartsAfterReboot(string baseDirectory)
+    {
+        if (OperatingSystem.IsWindows())
+            return Exec("schtasks", "/Query", "/TN", TaskName(baseDirectory)).Ok
+                || (IsRegistered(baseDirectory) && Exec("schtasks", "/Query", "/TN", BootTaskName).Ok);
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return false;
+        var installed = File.Exists(DefinitionPath(baseDirectory)) || (File.Exists(BootDefinitionPath()) && IsRegistered(baseDirectory));
+        return installed && (OperatingSystem.IsMacOS() || LingerEnabled());
+    }
 
     public static bool Start(string baseDirectory) => OperatingSystem.IsMacOS()
         ? Exec("launchctl", "kickstart", LaunchdTarget(baseDirectory)).Ok
@@ -194,16 +212,18 @@ public static partial class AgentService
         Console.WriteLine($"[SideHub] Service installed and started: {unit}");
         Console.WriteLine($"[SideHub] Unit file: {path}");
 
-        if (!LingerEnabled() && !Exec("loginctl", "enable-linger", Environment.UserName).Ok)
-        {
-            Console.WriteLine("[SideHub] Warning: lingering is off, so the agent stops when you log out and only starts at your next login.");
-            Console.WriteLine($"[SideHub] To start it at boot: sudo loginctl enable-linger {Environment.UserName}");
-        }
-        else
-        {
+        if (EnsureLinger())
             Console.WriteLine("[SideHub] It starts at boot, and again after a crash.");
-        }
         return 0;
+    }
+
+    /// <summary>Without lingering a systemd user unit only runs while the user is logged in, never at boot.</summary>
+    private static bool EnsureLinger()
+    {
+        if (LingerEnabled() || Exec("loginctl", "enable-linger", Environment.UserName).Ok) return true;
+        Console.WriteLine("[SideHub] Warning: lingering is off, so the agent stops when you log out and only starts at your next login.");
+        Console.WriteLine($"[SideHub] To start it at boot: sudo loginctl enable-linger {Environment.UserName}");
+        return false;
     }
 
     private static bool LingerEnabled()
@@ -331,23 +351,8 @@ public static partial class AgentService
 
     private static int InstallScheduledTask(string baseDirectory, string executable)
     {
-        var user = $"{Environment.UserDomainName}\\{Environment.UserName}";
-        var xmlFile = Path.Combine(Path.GetTempPath(), $"sidehub-agent-task-{Guid.NewGuid():N}.xml");
-        try
-        {
-            // Task Scheduler reads its XML as UTF-16
-            File.WriteAllText(xmlFile, ScheduledTaskXml(user, baseDirectory, executable), Encoding.Unicode);
-            var created = Exec("schtasks", "/Create", "/TN", TaskName(baseDirectory), "/XML", xmlFile, "/F");
-            if (!created.Ok)
-            {
-                Console.WriteLine($"[SideHub] Error: couldn't create the scheduled task: {created.Output}");
-                return 1;
-            }
-        }
-        finally
-        {
-            File.Delete(xmlFile);
-        }
+        if (!CreateScheduledTask(TaskName(baseDirectory), ScheduledTaskXml(TaskUser, baseDirectory, executable)))
+            return 1;
         Console.WriteLine($"[SideHub] Scheduled task created: \"{TaskName(baseDirectory)}\"");
         Console.WriteLine("[SideHub] The agent starts in the background each time you log on to Windows.");
         if (!new DaemonManager(baseDirectory).IsRunning())
@@ -355,12 +360,36 @@ public static partial class AgentService
         return 0;
     }
 
-    /// <summary>Runs <c>start -d</c> from the project folder at logon: the task ends once the daemon is started.</summary>
-    public static string ScheduledTaskXml(string user, string baseDirectory, string executable) => $"""
+    private static string TaskUser => $"{Environment.UserDomainName}\\{Environment.UserName}";
+
+    private static bool CreateScheduledTask(string name, string xml)
+    {
+        var xmlFile = Path.Combine(Path.GetTempPath(), $"sidehub-agent-task-{Guid.NewGuid():N}.xml");
+        try
+        {
+            // Task Scheduler reads its XML as UTF-16
+            File.WriteAllText(xmlFile, xml, Encoding.Unicode);
+            var created = Exec("schtasks", "/Create", "/TN", name, "/XML", xmlFile, "/F");
+            if (!created.Ok)
+                Console.WriteLine($"[SideHub] Error: couldn't create the scheduled task: {created.Output}");
+            return created.Ok;
+        }
+        finally
+        {
+            File.Delete(xmlFile);
+        }
+    }
+
+    /// <summary>
+    /// Runs <c>start -d</c> from the project folder at logon (or <c>start --all -d</c>, see <see cref="InstallBoot"/>):
+    /// the task ends once the daemons are started.
+    /// </summary>
+    public static string ScheduledTaskXml(string user, string baseDirectory, string executable, string arguments = "start -d",
+        string? description = null) => $"""
         <?xml version="1.0" encoding="UTF-16"?>
         <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
           <RegistrationInfo>
-            <Description>SideHub agent for {Xml(baseDirectory)} (sidehub-agent service install)</Description>
+            <Description>{Xml(description ?? $"SideHub agent for {baseDirectory} (sidehub-agent service install)")}</Description>
           </RegistrationInfo>
           <Triggers>
             <LogonTrigger>
@@ -386,7 +415,7 @@ public static partial class AgentService
           <Actions Context="Author">
             <Exec>
               <Command>{Xml(executable)}</Command>
-              <Arguments>start -d</Arguments>
+              <Arguments>{Xml(arguments)}</Arguments>
               <WorkingDirectory>{Xml(baseDirectory)}</WorkingDirectory>
             </Exec>
           </Actions>

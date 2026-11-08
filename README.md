@@ -470,9 +470,10 @@ Commands:
   restart           Stop then start the agent (-d, --all)
   logs              Show agent logs (--no-follow to print and exit)
   status            Show agent status (--all: every instance)
-  doctor            Show the coding CLIs the agent runs, whether they are logged in and how they are paid for
+  doctor            Show the coding CLIs the agent runs, whether they are logged in and how they are paid for,
+                    and the agents that won't start again after a reboot
   service install   Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)
-  service uninstall / service status
+  service uninstall / service status   (--all: one boot entry for every agent of the machine)
   version           Print the agent's version
   help              Show help
 
@@ -502,6 +503,23 @@ The unit and the LaunchAgent run the agent with the `PATH` of the shell that ins
 from nvm or `~/.local/bin` resolves): run `service install` again after moving a CLI. They write the
 usual log and PID files, so `status` and `logs` work as before, and `start`, `stop` and `restart` go
 through systemd / launchd (a plain kill would be undone by the restart policy).
+
+### Several repositories on one machine
+
+```bash
+sidehub-agent service install --all     # uninstall --all / status --all
+```
+
+One boot entry runs `sidehub-agent start --all -d`: every agent registered on the machine
+(`~/.sidehub/instances.json`, filled by `setup` and `start`) starts again, including the ones set up later,
+without a service per folder. Linux: oneshot user unit `sidehub-agent-all.service` (lingering enabled like
+above), at boot. macOS: LaunchAgent `io.sidehub.agent.all.plist`, at login. Windows: scheduled task
+`SideHub Agent (all)`, at logon. It only starts the agents: a crashed one is not restarted (a folder's own
+service does that), and `start`, `stop`, `restart` work as without it. Installing it starts nothing: an
+agent you stopped stays stopped until the next boot.
+
+`sidehub-agent doctor` (and the end of `setup`) lists the agents that won't start again after a reboot,
+and SideHub shows it on the agent's card (`agent.connected.supervised`).
 
 For a hardened setup under a dedicated system user, use the templates in [`contrib/`](contrib/)
 (also installed in `/usr/local/lib/sidehub-agent/contrib/`):
@@ -542,7 +560,7 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 
 | Message | Purpose |
 |---|---|
-| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions, `installId`, `os`, `arch`, `selfUpdate`) and keep-alive every 15 s |
+| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions, `installId`, `os`, `arch`, `selfUpdate`, `supervised`: starts again after a reboot, checked every 2 minutes) and keep-alive every 15 s |
 | `agent.update-status` | Progress of an update: `downloading`, `waiting-idle` (with `busyReasons`), `applying`, `succeeded`, `rolled-back`, `failed`, `canceled` |
 | `pty.started` / `pty.exited` | Terminal spawned (with its real start time) / process ended (exit code) |
 | `pty.output` / `pty.history` | Terminal output, live / replayed |

@@ -113,6 +113,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
     private Timer? _cliSessionUsageTimer;
+    // agent.connected.supervised as last sent: `service install --all` restarts no agent, so it is checked again
+    private Timer? _rebootCheckTimer;
+    private bool? _reportedSupervised;
+    private static readonly TimeSpan RebootCheckInterval = TimeSpan.FromMinutes(2);
     // Agent-owned 0700 folder holding the notification FIFOs (see NotifyFifo).
     private readonly string _fifoDirectory;
     private readonly string _fifoAgentKey;
@@ -1384,6 +1388,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         RunInBackground("codex limit", () => CheckCodexLimitAsync(sid, session.CliSessionId, ct));
             },
             null, CliSessionUsageCollector.ReportInterval, CliSessionUsageCollector.ReportInterval);
+        _rebootCheckTimer ??= new Timer(
+            _ => RunInBackground("reboot check", async () =>
+            {
+                if (_connectedAt != default && _reportedSupervised is { } reported && AgentService.StartsAfterReboot(_workingDirectory) != reported)
+                    await SendConnectedMessageAsync(ct);
+            }),
+            null, RebootCheckInterval, RebootCheckInterval);
         RunInBackground("startup checks", () => ReportStartupProblemsAsync(ct));
 
         while (!ct.IsCancellationRequested)
@@ -1511,6 +1522,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             ? "probing"
             : $"[{string.Join(", ", cliVersions.Select(v => $"{v.Key} {v.Value}{LoginLabel(v.Key)}"))}]"));
 
+        var supervised = AgentService.StartsAfterReboot(_workingDirectory);
+        _reportedSupervised = supervised;
         var message = new AgentConnectedMessage
         {
             AgentId = _config.AgentId!,
@@ -1530,6 +1543,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             Os = SelfUpdate.Os,
             Arch = SelfUpdate.Arch,
             SelfUpdate = (_updates?.Support ?? SelfUpdate.Support).Message(),
+            Supervised = supervised,
         };
         await SendAsync(message, ct);
 
@@ -2927,6 +2941,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _outgoing.Dispose();
         _cliSessionUsageTimer?.Dispose();
         _cliSessionUsageTimer = null;
+        _rebootCheckTimer?.Dispose();
+        _rebootCheckTimer = null;
 
         // Dispose multi-PTY sessions
         foreach (var (sid, session) in _ptySessions)
