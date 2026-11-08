@@ -186,6 +186,13 @@ public static class Commands
         {
             return await RunForeground(baseDirectory, ct);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Before the finally: once the console is restored (/dev/null for a daemon), Program's message is lost
+            Console.WriteLine($"[SideHub] Startup failed: {ex.Message}");
+            ReportStartupFailure(baseDirectory, ex.Message);
+            throw;
+        }
         finally
         {
             Console.SetOut(originalOut);
@@ -196,6 +203,23 @@ public static class Commands
             {
                 File.Delete(pidFile);
             }
+        }
+    }
+
+    /// <summary>
+    /// The updater waits for <c>health.json</c> after a restart: with the reason there, it says why this daemon did not
+    /// come up instead of waiting for it until its timeout.
+    /// </summary>
+    private static void ReportStartupFailure(string baseDirectory, string problem)
+    {
+        try
+        {
+            UpdateFiles.Write(UpdateFiles.HealthPath(baseDirectory),
+                new InstanceHealth(Environment.ProcessId, VersionInfo.AgentVersion, false, problem, DateTime.UtcNow));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"[SideHub] Health file not written: {ex.Message}");
         }
     }
 

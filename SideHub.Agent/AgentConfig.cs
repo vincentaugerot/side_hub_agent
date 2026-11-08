@@ -58,8 +58,8 @@ public class AgentConfig
     /// Loads every <c>.sidehub/*.json</c> the agent may trust. A config decides which backend the agent obeys, and
     /// the backend runs commands in its PTYs: a config arriving through a commit (<c>sidehubUrl</c> pointing to an
     /// attacker's server) would hand the machine over after the next pull and restart. So configs tracked by git,
-    /// symbolic links and files belonging to another user are ignored, with one warning each. Throws when no
-    /// config is left.
+    /// symbolic links and files belonging to another user are ignored, with one warning each, and so are files that
+    /// are not a valid config. Throws when no config is left.
     /// </summary>
     public static async Task<List<AgentConfig>> LoadAllAsync(
         string baseDirectory, Action<string>? warn = null, AgentTokenStore? tokens = null)
@@ -87,6 +87,12 @@ public class AgentConfig
 
         var repository = await GitRepository.OpenAsync(configDir);
         var configs = new List<AgentConfig>();
+        var ignored = new List<string>();
+        void Ignore(string file, string reason)
+        {
+            ignored.Add($"{Path.GetFileName(file)}: {reason}");
+            warn?.Invoke($"Ignoring {file}: {reason}");
+        }
 
         foreach (var file in configFiles.Order(StringComparer.Ordinal))
         {
@@ -100,18 +106,24 @@ public class AgentConfig
                          $"git rm --cached it and keep {ConfigFolder}/ in .gitignore";
             if (reason is not null)
             {
-                warn?.Invoke($"Ignoring {file}: {reason}");
+                Ignore(file, reason);
                 continue;
             }
 
-            configs.Add(Load(file, tokens, warn));
+            // One unreadable or invalid file (another tool's, a truncated config) must not stop every agent of the repo
+            try
+            {
+                configs.Add(Load(file, tokens, warn));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or JsonException or IOException or UnauthorizedAccessException)
+            {
+                Ignore(file, ex.Message);
+            }
         }
 
+        // The reasons go in the message too: a daemon writes it to its log and its health file, for the updater
         if (configs.Count == 0)
-        {
-            throw new InvalidOperationException(
-                $"No trusted agent configuration in {configDir} (see the warnings above)");
-        }
+            throw new InvalidOperationException($"No usable agent configuration in {configDir}: {string.Join("; ", ignored)}");
 
         return configs;
     }

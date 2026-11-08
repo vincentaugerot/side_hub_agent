@@ -82,6 +82,37 @@ public class UntrustedSidehubFilesTests : IDisposable
     }
 
     [Fact]
+    public async Task An_invalid_json_file_is_ignored_with_a_warning_and_the_others_still_load()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var local = WriteConfig("agent.json");
+        var other = Path.Combine(SidehubDir, "other.json");
+        File.WriteAllText(other, "{}");
+        var truncated = Path.Combine(SidehubDir, "truncated.json");
+        File.WriteAllText(truncated, "{ \"agentId\": ");
+        var warnings = new List<string>();
+
+        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add, Tokens);
+
+        Assert.Equal(local, Assert.Single(configs).ConfigFilePath);
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains(warnings, w => w.StartsWith($"Ignoring {other}: "));
+        Assert.Contains(warnings, w => w.StartsWith($"Ignoring {truncated}: "));
+    }
+
+    [Fact]
+    public async Task Loading_fails_with_the_reasons_when_no_config_is_valid()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        Directory.CreateDirectory(SidehubDir);
+        File.WriteAllText(Path.Combine(SidehubDir, "bad.json"), "{}");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => AgentConfig.LoadAllAsync(_dir, tokens: Tokens));
+
+        Assert.Contains("bad.json: ", ex.Message);
+    }
+
+    [Fact]
     public async Task Loading_fails_when_every_config_is_refused()
     {
         if (OperatingSystem.IsWindows()) return;

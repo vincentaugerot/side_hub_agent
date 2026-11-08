@@ -99,8 +99,9 @@ public static class UpdateApplier
             log($"Installed {pending.Version}");
 
             Progress("starting");
+            var startedAt = DateTime.UtcNow;
             await StartAllAsync(instances, installDirectory, log);
-            if (await WaitHealthyAsync(instances, pending.Version, log, ct) is not { } unhealthy)
+            if (await WaitHealthyAsync(instances, pending.Version, startedAt, log, ct) is not { } unhealthy)
             {
                 InstallSwap.CleanUp(installDirectory);
                 return Outcome(UpdateStates.Succeeded);
@@ -131,7 +132,14 @@ public static class UpdateApplier
             await StartAllAsync(instances, installDirectory, log);
             return Outcome(UpdateStates.Failed, UpdateErrors.Unhealthy, $"{problem}; rollback failed: {ex.Message}");
         }
-        await StartAllAsync(instances, installDirectory, log);
+        var stillDown = await StartAllAsync(instances, installDirectory, log);
+        if (stillDown.Count > 0)
+        {
+            // Rolling back was no repair: the cause is on this machine (a file of the repo, say), not in the release
+            var names = string.Join(", ", stillDown);
+            log($"The previous release does not start {names} either: fix the reason above, the release is not the cause");
+            problem += $"; the previous release does not start {names} either";
+        }
         return Outcome(UpdateStates.RolledBack, UpdateErrors.Unhealthy, problem);
     }
 
@@ -172,17 +180,36 @@ public static class UpdateApplier
         return true;
     }
 
-    /// <summary>Each agent comes back the way it ran: through its service, or as a daemon (<c>start -d</c>).</summary>
-    private static async Task StartAllAsync(IEnumerable<AgentInstance> instances, string installDirectory, Action<string> log)
+    /// <summary>
+    /// Each agent comes back the way it ran: through its service, or as a daemon (<c>start -d</c>). Returns the names of
+    /// those that could not start.
+    /// </summary>
+    private static async Task<List<string>> StartAllAsync(IEnumerable<AgentInstance> instances, string installDirectory, Action<string> log)
     {
+        var failed = new List<string>();
         foreach (var instance in instances)
         {
+            var since = DateTime.UtcNow;
             var started = instance.Supervised
                 ? AgentService.Start(instance.Directory)
                 : await StartDaemonAsync(instance.Directory, installDirectory);
-            log($"{(started ? "Started" : "Could not start")} {instance.Directory}");
+            if (started)
+            {
+                log($"Started {instance.Directory}");
+                continue;
+            }
+            log($"Could not start {instance.Directory}{(StartupFailure(instance.Directory, since) is { } reason ? $": {reason}" : "")}");
+            failed.Add(Path.GetFileName(instance.Directory));
         }
+        return failed;
     }
+
+    /// <summary>The problem a daemon of <paramref name="directory"/> reported in its health file since
+    /// <paramref name="since"/> (a startup failure, or a failed startup check), if any.</summary>
+    public static string? StartupFailure(string directory, DateTime since) =>
+        UpdateFiles.Read<InstanceHealth>(UpdateFiles.HealthPath(directory)) is { Ok: false } health && health.At >= since
+            ? (health.Problem ?? "its startup checks failed").ReplaceLineEndings(" ") // one line in update.log
+            : null;
 
     private static async Task<bool> StartDaemonAsync(string directory, string installDirectory)
     {
@@ -215,9 +242,11 @@ public static class UpdateApplier
     /// <summary>
     /// Null once every restarted daemon runs <paramref name="version"/>, passed its startup checks and still runs
     /// <see cref="SettleTime"/> later; otherwise what went wrong. The backend connection is not required: a SideHub
-    /// outage must not roll back a good release.
+    /// outage must not roll back a good release. A daemon that failed since <paramref name="startedAt"/> says why in
+    /// its health file, even once it has exited (no need to wait for the timeout then).
     /// </summary>
-    private static async Task<string?> WaitHealthyAsync(List<AgentInstance> instances, string version, Action<string> log, CancellationToken ct)
+    private static async Task<string?> WaitHealthyAsync(
+        List<AgentInstance> instances, string version, DateTime startedAt, Action<string> log, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + HealthTimeout;
         while (true)
@@ -227,11 +256,11 @@ public static class UpdateApplier
             {
                 var name = Path.GetFileName(instance.Directory);
                 var pid = new DaemonManager(instance.Directory).ReadPid();
+                if (StartupFailure(instance.Directory, startedAt) is { } failure)
+                    return $"{name}: {failure}";
                 var health = UpdateFiles.Read<InstanceHealth>(UpdateFiles.HealthPath(instance.Directory));
                 if (pid is null || health is null || health.Pid != pid || health.Version != version || !AgentInstances.IsAlive(pid.Value))
                     waiting.Add(name);
-                else if (!health.Ok)
-                    return $"{name}: {health.Problem}";
             }
 
             if (waiting.Count == 0)
