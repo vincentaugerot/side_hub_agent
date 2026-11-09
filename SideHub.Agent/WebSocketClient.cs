@@ -559,6 +559,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // and its commit is now waiting to be pushed.
                 case FifoNotification.TaskDone:
                     _ptyOpenTasks.TryRemove(ptySessionId, out _);
+                    _cliStates.TaskDone(ptySessionId);
                     RunInBackground("review.changes", async () =>
                     {
                         if (_reviews.HasOpenRound(ptySessionId))
@@ -2729,14 +2730,14 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         });
     }
 
-    /// <summary>Whether the CLI of another terminal in the same folder is working right now.</summary>
+    /// <summary>Whether the CLI of another terminal in the same folder is working right now. The previous task of
+    /// the queue is not: it said <c>task done</c> and only ends its turn.</summary>
     private bool OtherCliWorking(string ptySessionId, string cwd)
     {
         string full;
         try { full = Path.GetFullPath(cwd); }
         catch { full = cwd; }
-        return _ptyCwd.Any(entry => entry.Key != ptySessionId && entry.Value == full
-                                    && _cliStates.Current(entry.Key)?.State == CliStates.Working);
+        return _ptyCwd.Any(entry => entry.Key != ptySessionId && entry.Value == full && _cliStates.Busy(entry.Key));
     }
 
     /// <summary>A fix is about to be typed in a terminal that is still open: photo of the folder first, then the

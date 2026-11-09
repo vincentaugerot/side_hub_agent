@@ -42,6 +42,8 @@ public sealed record PtyCliState(string Provider, string State, string? CliSessi
 public sealed class CliStateTracker
 {
     private readonly ConcurrentDictionary<string, PtyCliState> _states = new();
+    // PTYs whose queued task said `task done` during the turn going on: that turn only finishes the task
+    private readonly ConcurrentDictionary<string, byte> _finishingTurns = new();
 
     /// <summary>Records a report; returns the message to send, or null when it repeats the PTY's current state.</summary>
     public PtyCliStateMessage? Record(string ptySessionId, string provider, string state, string? cliSessionId, DateTime at,
@@ -57,6 +59,8 @@ public sealed class CliStateTracker
             return null;
         var next = new PtyCliState(provider, state, cliSessionId, at, prompt);
         _states[ptySessionId] = next;
+        if (state == CliStates.Idle)
+            _finishingTurns.TryRemove(ptySessionId, out _);
         return next.Message(ptySessionId);
     }
 
@@ -64,8 +68,32 @@ public sealed class CliStateTracker
     public PtyCliStateMessage? Current(string ptySessionId) =>
         _states.TryGetValue(ptySessionId, out var state) ? state.Message(ptySessionId) : null;
 
-    /// <summary>The CLI exited or the PTY closed: nothing is known any more.</summary>
-    public void Clear(string ptySessionId) => _states.TryRemove(ptySessionId, out _);
+    /// <summary>
+    /// The PTY's queued task said <c>sidehub-cli task done</c>. The CLI says it from inside its turn, so it keeps
+    /// working a few seconds more while the queue already starts the next task: until that turn ends, the PTY is not
+    /// <see cref="Busy"/>.
+    /// </summary>
+    public void TaskDone(string ptySessionId)
+    {
+        if (_states.TryGetValue(ptySessionId, out var state) && state.State == CliStates.Working)
+            _finishingTurns[ptySessionId] = 0;
+    }
 
-    public void ClearAll() => _states.Clear();
+    /// <summary>Whether the PTY's CLI is working on something, other than the end of a task already done.</summary>
+    public bool Busy(string ptySessionId) =>
+        _states.TryGetValue(ptySessionId, out var state) && state.State == CliStates.Working
+        && !_finishingTurns.ContainsKey(ptySessionId);
+
+    /// <summary>The CLI exited or the PTY closed: nothing is known any more.</summary>
+    public void Clear(string ptySessionId)
+    {
+        _states.TryRemove(ptySessionId, out _);
+        _finishingTurns.TryRemove(ptySessionId, out _);
+    }
+
+    public void ClearAll()
+    {
+        _states.Clear();
+        _finishingTurns.Clear();
+    }
 }

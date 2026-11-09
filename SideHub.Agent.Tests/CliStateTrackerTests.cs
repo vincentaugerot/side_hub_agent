@@ -105,4 +105,43 @@ public class CliStateTrackerTests
         Assert.Equal("waiting-input", root.GetProperty("state").GetString());
         Assert.Equal("2026-10-02T07:15:30Z", root.GetProperty("at").GetString());
     }
+
+    [Fact]
+    public void A_working_cli_is_busy_until_its_turn_ends()
+    {
+        Assert.False(_tracker.Busy(Pty));
+        _tracker.Record(Pty, "claude", CliStates.Working, Session, T0);
+        Assert.True(_tracker.Busy(Pty));
+        _tracker.Record(Pty, "claude", CliStates.Idle, Session, T0.AddSeconds(5));
+        Assert.False(_tracker.Busy(Pty));
+    }
+
+    [Fact]
+    public void The_turn_that_says_task_done_no_longer_counts_as_busy()
+    {
+        _tracker.Record(Pty, "claude", CliStates.Working, Session, T0);
+
+        // The queue's next task starts while this turn still writes its last answer.
+        _tracker.TaskDone(Pty);
+        Assert.False(_tracker.Busy(Pty));
+        Assert.Equal(CliStates.Working, _tracker.Current(Pty)!.State);
+        _tracker.Record(Pty, "claude", CliStates.WaitingInput, Session, T0.AddSeconds(1));
+        _tracker.Record(Pty, "claude", CliStates.Working, Session, T0.AddSeconds(2));
+        Assert.False(_tracker.Busy(Pty));
+
+        // A new turn typed in that terminal afterwards is work again.
+        _tracker.Record(Pty, "claude", CliStates.Idle, Session, T0.AddSeconds(3));
+        _tracker.Record(Pty, "claude", CliStates.Working, Session, T0.AddSeconds(60));
+        Assert.True(_tracker.Busy(Pty));
+    }
+
+    [Fact]
+    public void Task_done_from_an_idle_terminal_leaves_its_next_turn_busy()
+    {
+        _tracker.Record(Pty, "claude", CliStates.Idle, Session, T0);
+        _tracker.TaskDone(Pty);
+
+        _tracker.Record(Pty, "claude", CliStates.Working, Session, T0.AddSeconds(10));
+        Assert.True(_tracker.Busy(Pty));
+    }
 }
