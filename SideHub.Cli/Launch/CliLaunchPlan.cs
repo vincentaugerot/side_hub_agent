@@ -52,6 +52,9 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// </summary>
     public const string CodexInlineScreen = "tui.alternate_screen=never";
 
+    /// <summary>codex exec's option to write its last answer to a file.</summary>
+    public const string CodexOutputLastMessage = "--output-last-message";
+
     private static readonly HashSet<string> InfoOptions = ["--help", "-h", "--version", "-v", "-V"];
 
     // Options through which the caller already chose the session: the launcher leaves it alone.
@@ -74,9 +77,13 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// tool policy, which checks them call by call.</param>
     /// <param name="unattended">Launched by SideHub for a run or a task, with nobody to answer yet: codex's TUI starts
     /// without its update offer (<see cref="CodexNoUpdateCheck"/>).</param>
+    /// <param name="runAnswerFile">The file where the agent reads a run's last answer (absolute path), null outside a
+    /// run: <c>codex exec</c> writes it (<c>--output-last-message</c>), since it announces no session whose transcript
+    /// the agent could read.</param>
     public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion,
         Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null, ToolPolicy? toolPolicy = null,
-        IReadOnlyList<string>? declinedProjectMcpServers = null, string? machineMcpHook = null, bool unattended = false)
+        IReadOnlyList<string>? declinedProjectMcpServers = null, string? machineMcpHook = null, bool unattended = false,
+        string? runAnswerFile = null)
     {
         if (!KnownClis.Contains(cli))
             throw new ArgumentException($"Unknown CLI '{cli}'.", nameof(cli));
@@ -101,6 +108,11 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
             sessionId = newSessionId().ToString("D");
             args.InsertRange(0, ["--session-id", sessionId]);
         }
+
+        // An option of exec, so right after it (the -c below go before it). The caller's own file is left alone.
+        if (cli == "codex" && runAnswerFile is not null && startsConversation && args.Count > 0 && args[0] is "exec" or "e"
+            && !SetsCodexOutputLastMessage(args))
+            args.InsertRange(1, [CodexOutputLastMessage, runAnswerFile]);
 
         if (cli == "codex" && startsConversation && !(args.Count > 0 && HeadlessCodexSubcommands.Contains(args[0]))
             && !args.Contains("--no-alt-screen") && !SetsCodexConfig(args, "tui.alternate_screen"))
@@ -210,6 +222,10 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     private static bool SetsClaudeSettings(List<string> args) => args.Any(a => SplitOption(a).Name == "--settings");
 
     private static bool SetsCodexNotify(List<string> args) => SetsCodexConfig(args, "notify");
+
+    /// <summary>A <c>-o</c> / <c>--output-last-message</c> (or <c>--output-last-message=…</c>, <c>-o…</c>) among the arguments.</summary>
+    private static bool SetsCodexOutputLastMessage(List<string> args) =>
+        args.Any(a => SplitOption(a).Name == CodexOutputLastMessage || a.StartsWith("-o", StringComparison.Ordinal));
 
     /// <summary>A <c>-c key=…</c> / <c>--config key=…</c> (or <c>--config=key=…</c>) among the arguments.</summary>
     private static bool SetsCodexConfig(List<string> args, string key)

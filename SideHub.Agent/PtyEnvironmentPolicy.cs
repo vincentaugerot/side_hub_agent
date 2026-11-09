@@ -27,7 +27,8 @@ public static partial class PtyEnvironmentPolicy
     /// <summary>SIDEHUB_* keys owned by the agent: they point at the API, the notify FIFO (and hold its
     /// secret), the wrappers and the bash rcfile, so overriding them would redirect the token or run code; or they
     /// state what the agent checked out (the commit a question run reads); or only <c>sidehub-cli launch</c> sets them
-    /// (the CLI it started, which would otherwise make the terminal's first CLI look nested and go unannounced).</summary>
+    /// (the CLI it started, which would otherwise make the terminal's first CLI look nested and go unannounced); or they
+    /// name a file the CLI writes (a run's answer file, see <see cref="RunAnswerFiles"/>: any path would be overwritten).</summary>
     private static readonly HashSet<string> AgentOwnedKeys = new(StringComparer.Ordinal)
     {
         "SIDEHUB_PTY_SESSION_ID",
@@ -41,6 +42,7 @@ public static partial class PtyEnvironmentPolicy
         McpServerPolicy.EnvironmentKey,
         QuestionCheckout.CommitKey,
         "SIDEHUB_LAUNCHED_CLI",
+        RunAnswerFiles.Variable,
     };
 
     /// <summary>Variables a workspace secret may never replace: they decide what code the shell (or a CLI it starts)

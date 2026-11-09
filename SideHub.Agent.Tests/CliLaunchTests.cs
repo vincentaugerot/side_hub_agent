@@ -326,6 +326,38 @@ public class CliLaunchTests : IDisposable
         Assert.NotNull(problem);
     }
 
+    [Theory]
+    [InlineData("exec")]
+    [InlineData("e")]
+    public void A_runs_codex_exec_writes_its_last_answer_where_the_agent_reads_it(string exec)
+    {
+        var plan = CliLaunchPlan.For("codex", [exec, "--json", "--model", "m"], "do it", null, () => Minted,
+            unattended: true, runAnswerFile: "/repo/.sidehub/run/answers/a/run-1.txt");
+
+        Assert.Equal([exec, CliLaunchPlan.CodexOutputLastMessage, "/repo/.sidehub/run/answers/a/run-1.txt", "--json", "--model", "m", "do it"],
+            plan.Arguments);
+    }
+
+    [Theory]
+    [InlineData("--model", "m")]                                     // the TUI: no such option
+    [InlineData("exec", "-o", "/mine.txt")]                         // the caller's own file
+    [InlineData("exec", "--output-last-message=/mine.txt")]
+    [InlineData("exec", "--help")]
+    public void The_answer_file_is_only_given_to_codex_exec_that_sets_none(params string[] args) =>
+        Assert.DoesNotContain("/answer.txt",
+            CliLaunchPlan.For("codex", args, null, null, () => Minted, runAnswerFile: "/answer.txt").Arguments);
+
+    [Fact]
+    public void A_cli_never_sees_the_runs_answer_file()
+    {
+        // A codex exec the run's CLI launches (nested) must not write its own answer in place of the run's
+        var env = new Dictionary<string, string?> { [LaunchCommand.RunAnswerFileVariable] = "/repo/.sidehub/run/answers/a/run-1.txt" };
+
+        LaunchCommand.CliEnvironment(env, "codex", nested: false);
+
+        Assert.False(env.ContainsKey(LaunchCommand.RunAnswerFileVariable));
+    }
+
     [Fact]
     public void The_terminal_cli_is_marked_and_keeps_its_way_to_the_agent()
     {

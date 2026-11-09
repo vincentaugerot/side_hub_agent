@@ -42,6 +42,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     // PTYs opened for a task (SIDEHUB_TASK_ID) that has not called `sidehub-cli task done` yet, with its id: they hold an update
     private readonly ConcurrentDictionary<string, string> _ptyOpenTasks = new();
     private readonly McpSecretsFiles _mcpSecretsFiles;
+    private readonly RunAnswerFiles _runAnswers;
     // Real-path cwd of each PTY session, needed to locate Claude's project JSONL
     // for the ai-title watcher.
     private readonly ConcurrentDictionary<string, string> _ptyCwd = new();
@@ -185,6 +186,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var pendingDirectory = Path.Combine(runDir, "pending-usage", config.AgentId ?? "default");
         _fifoAgentKey = config.AgentId ?? "default";
         _fifoDirectory = Path.Combine(runDir, "fifo", _fifoAgentKey);
+        _runAnswers = new RunAnswerFiles(Path.Combine(runDir, "answers", _fifoAgentKey));
         // No PTY outlives the agent: the secrets files a crash left behind are deleted now.
         _mcpSecretsFiles = McpSecretsFiles.ForAgent(_fifoAgentKey);
         if (!_mcpSecretsFiles.DeleteAll())
@@ -433,6 +435,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             NotifyFifo.Delete(_fifoDirectory, ptySessionId);
         if (!_mcpSecretsFiles.Delete(ptySessionId))
             Log($"Could not delete the MCP secrets files of PTY {ptySessionId}");
+        if (NotifyFifo.IsValidPtySessionId(ptySessionId) && !_runAnswers.Delete(ptySessionId))
+            Log($"Could not delete the answer file of PTY {ptySessionId}");
     }
 
     /// <summary>Cancel any pending Claude ai-title watchers bound to this PTY.
@@ -753,26 +757,46 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         await TrySendAsync(message, ct);
     }
 
-    /// <summary>Where a run's CLI wrote its last answer, and the answer already sent for it, captured as its PTY exits.</summary>
-    private sealed record RunAnswerSource(string Cwd, PtyCliSession Session, PtyCliMessage? Sent);
+    /// <summary>Where a run's CLI wrote its last answer (its answer file, see <see cref="RunAnswerFiles"/>, or the
+    /// transcript of its session), and the answer already sent for it, captured as its PTY exits.</summary>
+    private sealed record RunAnswerSource(string? FileAnswer, string? Cwd, PtyCliSession? Session, PtyCliMessage? Sent);
 
-    private RunAnswerSource? RunAnswerSourceOf(string ptySessionId) =>
-        _ptyCwd.TryGetValue(ptySessionId, out var cwd) && _ptyCliSessions.TryGetValue(ptySessionId, out var session)
-            ? new RunAnswerSource(cwd, session, _cliMessages.Current(ptySessionId))
+    private RunAnswerSource? RunAnswerSourceOf(string ptySessionId)
+    {
+        string? fileAnswer = null;
+        try
+        {
+            fileAnswer = _runAnswers.Read(ptySessionId);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Log($"Answer file of run PTY {ptySessionId} not read: {ex.Message}");
+        }
+        var cwd = _ptyCwd.GetValueOrDefault(ptySessionId);
+        var session = _ptyCliSessions.GetValueOrDefault(ptySessionId);
+        return fileAnswer is not null || cwd is not null && session is not null
+            ? new RunAnswerSource(fileAnswer, cwd, session, _cliMessages.Current(ptySessionId))
             : null;
+    }
 
     /// <summary>
     /// The last answer of a run's CLI, read once its PTY exited: a headless CLI exits right after its turn, often before
-    /// the answer of its <c>idle</c> was read, and <c>codex exec</c> reports no state at all. Sent before the run's
-    /// <c>pty.exited</c>, so that it is the output of a step that completes on exit (doc 61), unless already sent.
+    /// the answer of its <c>idle</c> was read, and <c>codex exec</c> reports no state at all. Its answer file first
+    /// (<c>codex exec</c> may exit before its session is found), else the transcript of its session. Sent before the
+    /// run's <c>pty.exited</c>, so that it is the output of a step that completes on exit (doc 61), unless already sent.
     /// </summary>
     private async Task ReportRunLastMessageAsync(string ptySessionId, RunAnswerSource source, SecretMasker? masker, CancellationToken ct)
     {
-        var (provider, cliSessionId) = (source.Session.Provider, source.Session.CliSessionId);
+        var fromFile = source.FileAnswer is not null;
+        var provider = fromFile ? RunAnswerFiles.Provider : source.Session!.Provider;
+        // The session is only known to belong to the answer when it is the same CLI's
+        var cliSessionId = source.Session is { } session && session.Provider == provider ? session.CliSessionId : null;
         try
         {
-            if (!_lastMessageReaders.TryGetValue(provider, out var reader)
-                || reader.LastMessage(source.Cwd, cliSessionId) is not { } text || string.IsNullOrWhiteSpace(text))
+            var text = source.FileAnswer;
+            if (text is null && source is { Cwd: { } cwd, Session: { } transcriptOf } && _lastMessageReaders.TryGetValue(provider, out var reader))
+                text = reader.LastMessage(cwd, transcriptOf.CliSessionId);
+            if (string.IsNullOrWhiteSpace(text))
             {
                 Log($"No CLI answer for run PTY {ptySessionId} (provider={provider} cliSessionId={cliSessionId})");
                 return;
@@ -783,7 +807,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             text = CliMessageTracker.Cap(text);
             if (source.Sent is { } sent && sent.Text == text && sent.CliSessionId == cliSessionId)
                 return;
-            Log($"CLI answer in PTY {ptySessionId} at exit: {text.Length} chars (provider={provider} cliSessionId={cliSessionId})");
+            Log($"CLI answer in PTY {ptySessionId} at exit: {text.Length} chars from its {(fromFile ? "answer file" : "transcript")} (provider={provider} cliSessionId={cliSessionId})");
             await SendRunEndAsync(new PtyCliMessage
             {
                 PtySessionId = ptySessionId, Provider = provider, CliSessionId = cliSessionId, Text = text, At = DateTime.UtcNow,
@@ -2364,6 +2388,14 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             // because the env points the wrappers at it.
             EnsureNotifyFifo(ptySessionId);
             var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv, message.SecretKeys, message.McpServers);
+            // Where a run's codex exec writes its last answer: it announces no session to find its transcript by
+            if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null)
+            {
+                if (_runAnswers.Prepare(ptySessionId, out var answerProblem) is { } answerFile)
+                    ptyEnv[RunAnswerFiles.Variable] = answerFile;
+                else
+                    Log($"PTY {ptySessionId} has no answer file, its answer is read from the transcript: {answerProblem}");
+            }
 
             // A question run reads a checkout of origin/<branch> prepared by the agent (never a path from the
             // backend), not the developer's working copy. Without one, nothing starts: the backend sees no pty.started.

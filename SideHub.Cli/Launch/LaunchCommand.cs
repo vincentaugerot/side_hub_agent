@@ -23,6 +23,10 @@ public static class LaunchCommand
     /// by that CLI, or by a process of it (see <see cref="CliEnvironment"/>).</summary>
     public const string LaunchedCliVariable = "SIDEHUB_LAUNCHED_CLI";
 
+    /// <summary>Set by the agent in a run's terminal: the file where it reads the run's last answer (see
+    /// <see cref="CliLaunchPlan.For"/>). Only the terminal's CLI writes it: the CLI does not see it.</summary>
+    public const string RunAnswerFileVariable = "SIDEHUB_RUN_ANSWER_FILE";
+
     public static int Run(string[] args)
     {
         if (!TryReadPrompt(ref args, out var prompt, out var problem))
@@ -59,7 +63,7 @@ public static class LaunchCommand
         var taskId = Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable);
         var unattendedCodex = CodexWorkspaceTrust.Applies(cli, args[1..], runId, taskId);
         var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, nested ? null : StateReporting(cli), McpSetup(cli, warnings),
-            ToolPolicy(), declinedMcp, MachineMcpHook(), unattended: unattendedCodex);
+            ToolPolicy(), declinedMcp, MachineMcpHook(), unattended: unattendedCodex, runAnswerFile: nested ? null : RunAnswerFile());
         if (plan.Refusal is { } refusal)
         {
             Console.Error.WriteLine($"sidehub-cli launch: {refusal}");
@@ -135,6 +139,8 @@ public static class LaunchCommand
     {
         // The CLI must not see the prompt twice (some read their environment into sub-processes).
         environment.Remove(PromptVariable);
+        // Nor the run's answer file: a CLI it launches would write its own answer there.
+        environment.Remove(RunAnswerFileVariable);
         if (nested)
         {
             environment.Remove(AgentNotifier.ChannelVariable);
@@ -145,6 +151,12 @@ public static class LaunchCommand
             environment[LaunchedCliVariable] = cli;
         }
     }
+
+    /// <summary>The run's answer file (<c>$SIDEHUB_RUN_ANSWER_FILE</c>, set by the agent), null outside a run.</summary>
+    private static string? RunAnswerFile() =>
+        Environment.GetEnvironmentVariable(RunAnswerFileVariable) is { Length: > 0 } path && Path.IsPathFullyQualified(path)
+            ? path
+            : null;
 
     /// <summary>Best effort: without it, claude asks about each of them and someone answers in the terminal.</summary>
     private static IReadOnlyList<string>? DeclinedProjectMcpServers()
