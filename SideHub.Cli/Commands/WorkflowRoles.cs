@@ -43,8 +43,34 @@ public static class WorkflowRoles
         return true;
     }
 
+    /// <summary>
+    /// The e-mail of each member by user id, to name the default holders SideHub returns as user ids. Empty when the
+    /// workflow has no default holder or the member list cannot be read: the ids are shown then.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<string, string>> MemberEmailsAsync(SideHubApiClient client, JsonElement workflow)
+    {
+        var emails = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!Items(workflow, "roles").Any(r => Holders(r, "defaultHolders").Count > 0))
+            return emails;
+        try
+        {
+            var result = await client.GetWorkspaceMembersAsync();
+            var members = result.ValueKind == JsonValueKind.Object && result.TryGetProperty("members", out var m) ? m : result;
+            if (members.ValueKind == JsonValueKind.Array)
+                foreach (var member in members.EnumerateArray())
+                    if (Prop(member, "userId") is { } userId && Prop(member, "email") is { } email)
+                        emails[userId] = email;
+        }
+        catch (Exception)
+        {
+            // Best effort: the roles still show, with ids.
+        }
+        return emails;
+    }
+
     /// <summary>The lines of <c>workflow get</c> for the workflow's roles; none when it has no role.</summary>
-    public static IEnumerable<string> DescribeWorkflowRoles(JsonElement workflow)
+    /// <param name="emails">E-mail by user id (<see cref="MemberEmailsAsync"/>), for default holders given as ids.</param>
+    public static IEnumerable<string> DescribeWorkflowRoles(JsonElement workflow, IReadOnlyDictionary<string, string>? emails = null)
     {
         var roles = Items(workflow, "roles");
         if (roles.Count == 0)
@@ -52,7 +78,9 @@ public static class WorkflowRoles
         yield return $"Roles (workflow run {Flag} key=<e-mail>, default holders otherwise):";
         foreach (var role in roles)
         {
-            var defaults = Holders(role, "defaultHolders");
+            var defaults = Holders(role, "defaultHolders")
+                .Select(h => emails is not null && emails.TryGetValue(h, out var email) ? email : h)
+                .ToList();
             var holders = defaults.Count == 0 ? "no default holder" : $"default holders: {string.Join(", ", defaults)}";
             yield return $"  {Name(role)}: {holders}";
             if (Prop(role, "description") is { Length: > 0 } description)
@@ -70,33 +98,17 @@ public static class WorkflowRoles
     }
 
     /// <summary>
-    /// The lines of <c>workflow execution-get</c> for the holders frozen on the execution. Reads a list of roles
-    /// (<c>[{ key, label, holders }]</c>) or a map from key to holders.
+    /// The lines of <c>workflow execution-get</c> for the holders frozen on the execution
+    /// (<c>roleHolders: [{ key, label, description, holders: [{ userId, email, active }] }]</c>).
     /// </summary>
     public static IEnumerable<string> DescribeExecutionHolders(JsonElement execution)
     {
-        if (execution.ValueKind != JsonValueKind.Object || !execution.TryGetProperty("roleHolders", out var roleHolders))
-            yield break;
-
-        var lines = new List<string>();
-        if (roleHolders.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var role in roleHolders.EnumerateArray().Where(r => r.ValueKind == JsonValueKind.Object))
-                lines.Add($"  {Name(role)}: {HolderList(Holders(role, "holders"))}");
-        }
-        else if (roleHolders.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var role in roleHolders.EnumerateObject())
-            {
-                var holders = role.Value.ValueKind == JsonValueKind.Object ? Holders(role.Value, "holders") : HoldersOf(role.Value);
-                lines.Add($"  {role.Name}: {HolderList(holders)}");
-            }
-        }
-        if (lines.Count == 0)
+        var roles = Items(execution, "roleHolders");
+        if (roles.Count == 0)
             yield break;
         yield return "Role holders:";
-        foreach (var line in lines)
-            yield return line;
+        foreach (var role in roles)
+            yield return $"  {Name(role)}: {HolderList(Holders(role, "holders"))}";
     }
 
     /// <summary>" on behalf of the qa holder" when an owner or admin took the decision in place of the role's holders.</summary>
@@ -116,7 +128,10 @@ public static class WorkflowRoles
     private static List<string> Holders(JsonElement owner, string property) =>
         owner.ValueKind == JsonValueKind.Object && owner.TryGetProperty(property, out var holders) ? HoldersOf(holders) : [];
 
-    /// <summary>Each holder as its e-mail (its id otherwise), marked when it is no longer an active member.</summary>
+    /// <summary>
+    /// Each holder as its e-mail (its id otherwise), marked when it is no longer an active member: a user id for the
+    /// default holders of a workflow, <c>{ userId, email, active }</c> for the holders of an execution.
+    /// </summary>
     private static List<string> HoldersOf(JsonElement holders)
     {
         if (holders.ValueKind != JsonValueKind.Array)
@@ -131,11 +146,10 @@ public static class WorkflowRoles
             }
             if (holder.ValueKind != JsonValueKind.Object)
                 continue;
-            var name = Prop(holder, "email") ?? Prop(holder, "userId") ?? Prop(holder, "id");
+            var name = Prop(holder, "email") ?? Prop(holder, "userId");
             if (name is null)
                 continue;
-            var inactive = (holder.TryGetProperty("isActive", out var a) || holder.TryGetProperty("active", out a))
-                && a.ValueKind == JsonValueKind.False;
+            var inactive = holder.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.False;
             list.Add(inactive ? $"{name} (inactive)" : name);
         }
         return list;

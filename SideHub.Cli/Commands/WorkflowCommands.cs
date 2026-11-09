@@ -72,7 +72,7 @@ public static class WorkflowCommands
                 Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}): {Prop(p, "label")}");
             }
         }
-        foreach (var line in WorkflowRoles.DescribeWorkflowRoles(result))
+        foreach (var line in WorkflowRoles.DescribeWorkflowRoles(result, await WorkflowRoles.MemberEmailsAsync(client, result)))
             Console.WriteLine(line);
         Console.WriteLine();
         if (result.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)

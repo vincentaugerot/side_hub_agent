@@ -588,6 +588,14 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    /// <summary>The workspace members (<c>{ members: [{ id, userId, email, role, status }] }</c>).</summary>
+    public async Task<JsonElement> GetWorkspaceMembersAsync()
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/members");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     public async Task<JsonElement> GetWorkflowAsync(string workflowId)
     {
         var resp = await _http.GetAsync($"api/workflows/{workflowId}");

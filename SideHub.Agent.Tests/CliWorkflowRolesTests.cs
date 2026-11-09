@@ -67,26 +67,52 @@ public sealed class CliWorkflowRolesTests : IDisposable
     }
 
     [Fact]
-    public async Task Workflow_get_reads_a_workflow_with_roles()
+    public async Task Workflow_get_reads_the_members_to_name_the_default_holders()
     {
         _api.Respond("/workflows/wf-1", Workflow);
+        _api.Respond("/members", Members);
+
+        Assert.Equal(0, await WorkflowCommands.GetAsync(_client, ["wf-1"], json: false));
+        Assert.Equal(["/api/workflows/wf-1", $"/api/workspaces/{WorkspaceId}/members"], _api.Requests);
+    }
+
+    [Fact]
+    public async Task Workflow_get_without_default_holders_does_not_read_the_members()
+    {
+        _api.Respond("/workflows/wf-1", """{"id":"wf-1","roles":[{"key":"qa","label":"QA","defaultHolders":[]}],"steps":[]}""");
 
         Assert.Equal(0, await WorkflowCommands.GetAsync(_client, ["wf-1"], json: false));
         Assert.Equal("/api/workflows/wf-1", Assert.Single(_api.Requests));
     }
 
     [Fact]
-    public void Workflow_roles_show_their_label_and_default_holders()
+    public async Task Default_holders_are_named_by_their_e_mail()
     {
-        var lines = WorkflowRoles.DescribeWorkflowRoles(Parse(Workflow)).ToList();
+        _api.Respond("/members", Members);
+        var workflow = Parse(Workflow);
 
+        var lines = WorkflowRoles.DescribeWorkflowRoles(workflow, await WorkflowRoles.MemberEmailsAsync(_client, workflow)).ToList();
+
+        // Bob left the workspace: the member list no longer names him, his id stays.
         Assert.Equal([
             "Roles (workflow run --role key=<e-mail>, default holders otherwise):",
-            "  qa (QA): default holders: alice@example.com, bob@example.com (inactive)",
+            $"  qa (QA): default holders: alice@example.com, {Bob}",
             "      Checks the acceptance criteria",
             "  po (Product Owner): no default holder",
-            "  dev: default holders: 22222222-2222-2222-2222-222222222222",
+            "  dev: default holders: alice@example.com",
         ], lines);
+    }
+
+    [Fact]
+    public async Task Default_holders_keep_their_id_when_the_members_cannot_be_read()
+    {
+        _api.Respond("/members", """{"error":"forbidden"}""", System.Net.HttpStatusCode.Forbidden);
+        var workflow = Parse(Workflow);
+
+        var emails = await WorkflowRoles.MemberEmailsAsync(_client, workflow);
+
+        Assert.Empty(emails);
+        Assert.Contains($"  qa (QA): default holders: {Alice}, {Bob}", WorkflowRoles.DescribeWorkflowRoles(workflow, emails));
     }
 
     [Fact]
@@ -107,29 +133,26 @@ public sealed class CliWorkflowRolesTests : IDisposable
     }
 
     [Fact]
-    public void Execution_holders_read_a_list_of_roles()
+    public void Execution_holders_show_each_role_with_its_members()
     {
         var execution = Parse("""
             {"id":"e-1","roleHolders":[
-              {"key":"qa","label":"QA","holders":[{"userId":"u-1","email":"alice@example.com","isActive":true}]},
-              {"key":"po","label":"Product Owner","holders":[{"userId":"u-2","email":"bob@example.com","isActive":false}]},
-              {"key":"dev","label":"dev","holders":[]}]}
+              {"key":"qa","label":"QA","description":null,
+               "holders":[{"userId":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@example.com","active":true}]},
+              {"key":"po","label":"Product Owner","description":null,
+               "holders":[{"userId":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@example.com","active":false}]},
+              {"key":"architect","label":"architect","description":null,
+               "holders":[{"userId":"aaaaaaaa-0000-0000-0000-000000000001","email":null,"active":true}]},
+              {"key":"dev","label":"dev","description":null,"holders":[]}]}
             """);
 
         Assert.Equal([
             "Role holders:",
             "  qa (QA): alice@example.com",
             "  po (Product Owner): bob@example.com (inactive)",
+            $"  architect: {Alice}",
             "  dev: nobody",
         ], WorkflowRoles.DescribeExecutionHolders(execution));
-    }
-
-    [Fact]
-    public void Execution_holders_read_a_map_from_key_to_holders()
-    {
-        var execution = Parse("""{"roleHolders":{"qa":[{"email":"alice@example.com"}],"architect":["u-3"]}}""");
-
-        Assert.Equal(["Role holders:", "  qa: alice@example.com", "  architect: u-3"], WorkflowRoles.DescribeExecutionHolders(execution));
     }
 
     [Fact]
@@ -152,7 +175,9 @@ public sealed class CliWorkflowRolesTests : IDisposable
     public async Task Execution_get_reads_an_execution_with_holders_and_decisions()
     {
         _api.Respond("/workflow-executions/e-1", """
-            {"id":"e-1","status":"running","roleHolders":[{"key":"qa","label":"QA","holders":[{"email":"alice@example.com"}]}],
+            {"id":"e-1","status":"running",
+             "roleHolders":[{"key":"qa","label":"QA","description":null,
+               "holders":[{"userId":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@example.com","active":true}]}],
              "stepExecutions":[
                {"stepId":"s-1","order":0,"stepName":"Check","status":"completed","role":"qa",
                 "approval":{"decision":"approved","decidedByEmail":"admin@example.com","onBehalfOfRole":"qa"}},
@@ -164,13 +189,23 @@ public sealed class CliWorkflowRolesTests : IDisposable
         Assert.Equal("/api/workflow-executions/e-1", Assert.Single(_api.Requests));
     }
 
+    private const string Alice = "aaaaaaaa-0000-0000-0000-000000000001";
+    private const string Bob = "bbbbbbbb-0000-0000-0000-000000000002";
+
+    private const string Members = """
+        {"members":[
+          {"id":"m-1","userId":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@example.com","role":"member","status":"active"},
+          {"id":"m-3","userId":null,"email":"invited@example.com","role":"member","status":"pending"}]}
+        """;
+
+    // SideHub returns the default holders of a workflow as user ids.
     private const string Workflow = """
         {"id":"wf-1","name":"Ticket to ready",
          "roles":[
            {"key":"qa","label":"QA","description":"Checks the acceptance criteria",
-            "defaultHolders":[{"userId":"u-1","email":"alice@example.com","isActive":true},{"userId":"u-2","email":"bob@example.com","isActive":false}]},
-           {"key":"po","label":"Product Owner","defaultHolders":[]},
-           {"key":"dev","label":"dev","defaultHolders":["22222222-2222-2222-2222-222222222222"]}],
+            "defaultHolders":["aaaaaaaa-0000-0000-0000-000000000001","bbbbbbbb-0000-0000-0000-000000000002"]},
+           {"key":"po","label":"Product Owner","description":null,"defaultHolders":[]},
+           {"key":"dev","label":"dev","description":null,"defaultHolders":["aaaaaaaa-0000-0000-0000-000000000001"]}],
          "steps":[
            {"id":"s-1","order":0,"name":"Acceptance","kind":"approval","role":"qa"},
            {"id":"s-2","order":1,"name":"Code","kind":"agent"}]}
