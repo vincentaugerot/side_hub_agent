@@ -70,6 +70,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [InlineData("SIDEHUB_PTY_NOTIFY_SECRET")]
     [InlineData("SIDEHUB_WORKSPACE_ID")]
     [InlineData("SIDEHUB_QUESTION_COMMIT")]
+    [InlineData("SIDEHUB_PTY_FOLDER")]
     [InlineData(LaunchCommand.LaunchedCliVariable)]
     [InlineData(LaunchCommand.RunAnswerFileVariable)]
     [InlineData("SIDEHUB-BAD")]

@@ -54,7 +54,7 @@ public static class LaunchCommand
         var geminiVersion = cli == "gemini" ? RealCli.PackageVersion(target.ScriptPath, "@google/gemini-cli") : null;
         var warnings = new List<string>();
         // Launched by SideHub while nobody watches (a run, a task of the queue): claude's first-launch questions in this
-        // folder get the answer a person would give (trust the repository, start without its undecided MCP servers).
+        // folder get the answer a person would give (start without its undecided MCP servers; the trust question below).
         var unattended = ClaudeWorkspaceTrust.Applies(cli, args[1..],
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable),
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable));
@@ -72,13 +72,17 @@ public static class LaunchCommand
         foreach (var warning in warnings.Concat(plan.Warnings))
             Console.Error.WriteLine($"sidehub-cli launch: {warning}");
 
-        if (unattended)
+        // Started in the folder SideHub opened this terminal in (the agent's repository): the trust question is answered
+        // too, as the person sees it neither in Conversation mode nor before their first message ends the session.
+        var openedFolder = ClaudeWorkspaceTrust.InOpenedFolder(
+            Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.OpenedFolderVariable), Directory.GetCurrentDirectory());
+        if (ClaudeWorkspaceTrust.Applies(cli, args[1..], runId, taskId, openedFolder))
             TrustWorkspace();
-        if (AntigravityWorkspaceTrust.Applies(cli, args[1..], runId, taskId))
+        if (AntigravityWorkspaceTrust.Applies(cli, args[1..], runId, taskId, openedFolder))
             TrustAntigravityWorkspace();
-        if (unattendedCodex)
+        if (CodexWorkspaceTrust.Applies(cli, args[1..], runId, taskId, openedFolder))
             TrustRepository("codex", CodexWorkspaceTrust.ConfigPath(), CodexWorkspaceTrust.Accept);
-        if (CopilotWorkspaceTrust.Applies(cli, args[1..], runId, taskId))
+        if (CopilotWorkspaceTrust.Applies(cli, args[1..], runId, taskId, openedFolder))
             TrustRepository("copilot", CopilotWorkspaceTrust.ConfigPath(), CopilotWorkspaceTrust.Accept);
         if (plan.AntigravityHooks && HookProgram() is { } hookProgram)
             InstallAntigravityHooks(hookProgram);

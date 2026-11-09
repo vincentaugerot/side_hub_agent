@@ -21,6 +21,12 @@ public class AntigravityWorkspaceTrustTests : IDisposable
     public void Only_an_interactive_agy_of_a_run_or_a_task_is_concerned(string cli, string[] args, string? runId, string? taskId, bool expected) =>
         Assert.Equal(expected, AntigravityWorkspaceTrust.Applies(cli, args, runId, taskId));
 
+    [Theory]
+    [InlineData(new string[0], true)]
+    [InlineData(new[] { "-p" }, false)]
+    public void An_interactive_agy_in_the_folder_SideHub_opened_its_terminal_in_is_concerned(string[] args, bool expected) =>
+        Assert.Equal(expected, AntigravityWorkspaceTrust.Applies("agy", args, runId: null, taskId: null, openedFolder: true));
+
     [Fact]
     public void The_folder_is_added_once_and_the_rest_of_the_settings_kept()
     {

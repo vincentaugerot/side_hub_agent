@@ -107,6 +107,13 @@ sub-folder or a linked worktree, so that folder is the one marked: a `[projects.
 (your decision stands), and `trustedFolders` in `~/.copilot/config.json` (`$COPILOT_HOME`). An unattended codex
 TUI also starts with `-c check_for_update_on_startup=false`, so that it does not wait on its update offer.
 
+**A tab you open from SideHub.** In Conversation mode the CLI's terminal is out of sight: its question about
+trusting the folder would wait unseen, and the first message typed would answer it ("No, exit") and end the
+session. So the agent writes the folder it opened the terminal in (the agent's repository, or the folder of it
+SideHub asked for) to `SIDEHUB_PTY_FOLDER`, and an interactive claude, codex, copilot or agy the launcher
+starts right there gets its folder trusted as above. Only that question is answered: the project MCP servers
+stay yours to decide, and after a `cd` elsewhere the CLI asks as it would anywhere.
+
 **`cli-wrappers/`** (Linux, macOS): the agent puts small `claude` / `codex` / `gemini` / `copilot` / `agy`
 wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
 wrapper simply hands over to `sidehub-cli launch`. Without the launcher, the real CLI runs as if there

@@ -2331,6 +2331,14 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         }
     }
 
+    /// <summary>The terminal's folder as the shell's <c>getcwd</c> gives it (links resolved), for
+    /// <c>sidehub-cli launch</c> to recognize it.</summary>
+    private static string OpenedFolder(string cwd)
+    {
+        try { return PathConfinement.RealPath(cwd); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Path.GetFullPath(cwd); }
+    }
+
     /// <summary>The cwd a pty.start asked for, confined to the agent's working directory and its
     /// subfolders; anything else falls back to the working directory.</summary>
     private string ResolvePtyWorkingDirectory(string? requested, string ptySessionId)
@@ -2478,6 +2486,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 await _reviews.StartRoundAsync(reviewId, ptySessionId, cwd, runId is null ? ReviewKinds.Task : ReviewKinds.Run,
                     runId, taskId, OtherCliWorking(ptySessionId, cwd), WorkReviewTracker.LaunchSnapshotTimeout, ct);
             }
+
+            // Its CLI started here (the agent's repository, worktree or checkout) trusts the folder without asking.
+            ptyEnv[PtyEnvironmentPolicy.OpenedFolderVariable] = OpenedFolder(cwd);
 
             Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
 

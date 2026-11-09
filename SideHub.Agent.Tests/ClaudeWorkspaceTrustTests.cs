@@ -27,6 +27,29 @@ public class ClaudeWorkspaceTrustTests : IDisposable
     public void An_interactive_claude_of_a_task_is_concerned_too(string[] args, string taskId, bool expected) =>
         Assert.Equal(expected, ClaudeWorkspaceTrust.Applies("claude", args, runId: null, taskId));
 
+    [Theory]
+    [InlineData(new[] { "--session-id", "x" }, true)]
+    [InlineData(new string[0], true)]
+    [InlineData(new[] { "-p" }, false)]
+    public void An_interactive_claude_in_the_folder_SideHub_opened_its_terminal_in_is_concerned(string[] args, bool expected)
+    {
+        Assert.Equal(expected, ClaudeWorkspaceTrust.Applies("claude", args, runId: null, taskId: null, openedFolder: true));
+        // Its other first-launch questions (project MCP servers) stay the person's: it is not unattended.
+        Assert.False(ClaudeWorkspaceTrust.Applies("claude", args, runId: null, taskId: null));
+    }
+
+    [Fact]
+    public void Only_the_folder_the_terminal_was_opened_in_counts()
+    {
+        var repo = Path.Combine(_dir, "repo");
+        Assert.True(ClaudeWorkspaceTrust.InOpenedFolder(repo, repo));
+        Assert.True(ClaudeWorkspaceTrust.InOpenedFolder(repo + Path.DirectorySeparatorChar, repo));
+        Assert.False(ClaudeWorkspaceTrust.InOpenedFolder(repo, Path.Combine(_dir, "elsewhere")));
+        Assert.False(ClaudeWorkspaceTrust.InOpenedFolder(repo, Path.Combine(repo, "sub")));
+        Assert.False(ClaudeWorkspaceTrust.InOpenedFolder(null, repo));
+        Assert.False(ClaudeWorkspaceTrust.InOpenedFolder("", repo));
+    }
+
     [Fact]
     public void The_folder_is_trusted_and_the_rest_of_the_config_kept()
     {

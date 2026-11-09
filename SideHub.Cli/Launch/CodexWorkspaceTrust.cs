@@ -9,9 +9,11 @@ namespace SideHub.Cli.Launch;
 /// </summary>
 public static class CodexWorkspaceTrust
 {
-    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId) =>
+    /// <summary>An interactive codex launched for a run or a task, or (<paramref name="openedFolder"/>) started in the
+    /// folder SideHub opened its terminal in, where the dialog is out of sight in Conversation mode.</summary>
+    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId, bool openedFolder = false) =>
         cli == "codex"
-        && (!string.IsNullOrEmpty(runId) || !string.IsNullOrEmpty(taskId))
+        && (openedFolder || !string.IsNullOrEmpty(runId) || !string.IsNullOrEmpty(taskId))
         && !(arguments.Count > 0 && CliLaunchPlan.HeadlessCodexSubcommands.Contains(arguments[0]));
 
     /// <summary><c>$CODEX_HOME/config.toml</c>, else <c>~/.codex/config.toml</c>; null without a home.</summary>

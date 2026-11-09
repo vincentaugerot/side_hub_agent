@@ -12,8 +12,8 @@ namespace SideHub.Cli.Launch;
 /// </summary>
 public static class CopilotWorkspaceTrust
 {
-    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId) =>
-        cli == "copilot" && ClaudeWorkspaceTrust.Unattended(arguments, runId, taskId);
+    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId, bool openedFolder = false) =>
+        cli == "copilot" && ClaudeWorkspaceTrust.Answered(arguments, runId, taskId, openedFolder);
 
     /// <summary><c>$COPILOT_HOME/config.json</c>, else <c>~/.copilot/config.json</c>; null without a home.</summary>
     public static string? ConfigPath()

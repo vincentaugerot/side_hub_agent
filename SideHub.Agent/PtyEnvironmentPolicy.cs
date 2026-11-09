@@ -28,7 +28,8 @@ public static partial class PtyEnvironmentPolicy
     /// secret), the wrappers and the bash rcfile, so overriding them would redirect the token or run code; or they
     /// state what the agent checked out (the commit a question run reads); or only <c>sidehub-cli launch</c> sets them
     /// (the CLI it started, which would otherwise make the terminal's first CLI look nested and go unannounced); or they
-    /// name a file the CLI writes (a run's answer file, see <see cref="RunAnswerFiles"/>: any path would be overwritten).</summary>
+    /// name a file the CLI writes (a run's answer file, see <see cref="RunAnswerFiles"/>: any path would be overwritten); or
+    /// they name the folder whose CLIs start trusted (the one the agent opened the terminal in).</summary>
     private static readonly HashSet<string> AgentOwnedKeys = new(StringComparer.Ordinal)
     {
         "SIDEHUB_PTY_SESSION_ID",
@@ -43,7 +44,13 @@ public static partial class PtyEnvironmentPolicy
         QuestionCheckout.CommitKey,
         "SIDEHUB_LAUNCHED_CLI",
         RunAnswerFiles.Variable,
+        OpenedFolderVariable,
     };
+
+    /// <summary>The folder the agent opened the terminal in, real path: <c>sidehub-cli launch</c> answers the trust
+    /// question of a CLI started right there (the agent's repository), as the person may not see it (Conversation
+    /// mode).</summary>
+    public const string OpenedFolderVariable = "SIDEHUB_PTY_FOLDER";
 
     /// <summary>Variables a workspace secret may never replace: they decide what code the shell (or a CLI it starts)
     /// runs, where it looks for it, or who the shell is.</summary>

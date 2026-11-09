@@ -5,13 +5,14 @@ namespace SideHub.Cli.Launch;
 /// <summary>
 /// The first time agy runs interactively in a folder, it asks whether to trust it ("Do you trust the contents of this
 /// project?"); headless (<c>-p</c>) it never asks. Trusting a folder does not trust its sub-folders. Like
-/// <see cref="ClaudeWorkspaceTrust"/>, what SideHub launches interactively for a run or a task has nobody to answer yet:
+/// <see cref="ClaudeWorkspaceTrust"/>, what SideHub launches interactively for a run or a task has nobody to answer yet
+/// (nor is the dialog seen in Conversation mode, in the folder SideHub opened the terminal in):
 /// its folder is added to <c>trustedWorkspaces</c> in agy's settings, as accepting the dialog would.
 /// </summary>
 public static class AntigravityWorkspaceTrust
 {
-    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId) =>
-        cli == "agy" && ClaudeWorkspaceTrust.Unattended(arguments, runId, taskId);
+    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId, bool openedFolder = false) =>
+        cli == "agy" && ClaudeWorkspaceTrust.Answered(arguments, runId, taskId, openedFolder);
 
     /// <summary><c>~/.gemini/antigravity-cli/settings.json</c>; null without a home.</summary>
     public static string? SettingsPath()

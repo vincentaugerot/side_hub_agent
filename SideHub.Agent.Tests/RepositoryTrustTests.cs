@@ -71,6 +71,16 @@ public class RepositoryTrustTests : IDisposable
         Assert.Equal(expected, CodexWorkspaceTrust.Applies(cli, args, runId, taskId));
 
     [Theory]
+    [InlineData("codex", new string[0], true)]
+    [InlineData("codex", new[] { "exec" }, false)]
+    [InlineData("copilot", new string[0], true)]
+    [InlineData("copilot", new[] { "-p" }, false)]
+    public void An_interactive_codex_or_copilot_in_the_folder_SideHub_opened_its_terminal_in_is_concerned(string cli, string[] args, bool expected) =>
+        Assert.Equal(expected, cli == "codex"
+            ? CodexWorkspaceTrust.Applies(cli, args, runId: null, taskId: null, openedFolder: true)
+            : CopilotWorkspaceTrust.Applies(cli, args, runId: null, taskId: null, openedFolder: true));
+
+    [Theory]
     [InlineData("copilot", new[] { "-i" }, null, "task-id", true)]
     [InlineData("copilot", new[] { "-p" }, "run-id", null, false)]
     [InlineData("copilot", new string[0], null, null, false)]
