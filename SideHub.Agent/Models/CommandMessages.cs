@@ -255,6 +255,39 @@ public class PtyStartedMessage
 }
 
 /// <summary>
+/// Where a terminal works (<see cref="PtyGitPlaces"/>): the repository its folder is in, the branch checked out there and
+/// whether it is a linked worktree (the task queue's, doc 71). The cockpit shows it and reads the terminal's git changes
+/// there. Ignored by older backends.
+/// </summary>
+public class PtyGitPlaceMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.git-place";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    /// <summary>The repository's top folder, or the terminal's folder when it is not in a repository.</summary>
+    [JsonPropertyName("directory")]
+    public required string Directory { get; init; }
+
+    [JsonPropertyName("repository")]
+    public bool Repository { get; init; }
+
+    /// <summary>The branch checked out; null when HEAD is detached (see <see cref="Head"/>) or outside a repository.</summary>
+    [JsonPropertyName("branch")]
+    public string? Branch { get; init; }
+
+    /// <summary>The short sha of a detached HEAD; null otherwise.</summary>
+    [JsonPropertyName("head")]
+    public string? Head { get; init; }
+
+    /// <summary>The folder is a linked worktree, not the repository's main checkout.</summary>
+    [JsonPropertyName("worktree")]
+    public bool Worktree { get; init; }
+}
+
+/// <summary>
 /// The agent will not start the PTY a <c>pty.start</c> asked for, and says why, so the backend fails the run at once
 /// and the terminal tells the user, instead of waiting for a <c>pty.started</c> that never comes. Ignored by older
 /// backends (they still time out).

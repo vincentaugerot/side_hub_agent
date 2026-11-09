@@ -111,6 +111,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly QueueWorktree _queueWorktree;
     // The commits of the agent's branch not pushed yet (git.outgoing), and the push confirmed from SideHub.
     private readonly OutgoingCommitsReporter _outgoing;
+    private readonly PtyGitPlaces _gitPlaces;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
     private Timer? _cliSessionUsageTimer;
@@ -202,6 +203,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         // The queue's work is pushed from its worktree once there is one; before, from the agent's folder.
         _outgoing = new OutgoingCommitsReporter(
             () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false), TrySendAsync, Log);
+        // Where each terminal works (branch, worktree), read in the folder it was started in
+        _gitPlaces = new PtyGitPlaces(() => _ptyCwd.Where(entry => _ptySessions.ContainsKey(entry.Key)), TrySendAsync, Log);
         foreach (var (provider, harvester) in sessionHarvesters)
             _lastMessageReaders[provider] = harvester;
         _cliSessionUsage = new CliSessionUsageCollector(
@@ -421,6 +424,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             cts.Dispose();
         }
         _ptyCwd.TryRemove(ptySessionId, out _);
+        _gitPlaces.Forget(ptySessionId);
         _ptyNotifySecrets.TryRemove(ptySessionId, out _);
         _ptyOpenTasks.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
@@ -646,6 +650,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             var cliSessionId = changed.CliSessionId
                 ?? (_ptyCliSessions.TryGetValue(ptySessionId, out var known) && known.Provider == changed.Provider ? known.CliSessionId : null);
             RunInBackground("cli-message", () => ReportLastMessageAsync(ptySessionId, changed.Provider, cliSessionId, ct));
+            // The turn may have switched branch: the cockpit shows the new one without waiting for the next poll
+            if (_ptyCwd.TryGetValue(ptySessionId, out var placeDirectory))
+                RunInBackground("git place", () => _gitPlaces.RefreshAsync(ptySessionId, placeDirectory, ct));
             if (changed.Provider == "codex" && cliSessionId is not null)
                 RunInBackground("codex limit", () => CheckCodexLimitAsync(ptySessionId, cliSessionId, ct));
         }
@@ -1453,6 +1460,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 RunInBackground("peer review checkouts purge", () => _peerReviews.PurgeLeftoversAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
                 _outgoing.Start(ct);
+                _gitPlaces.Start(ct);
                 if (_updates is not null)
                     RunInBackground("update outcome", _updates.OnConnectedAsync);
                 StartHeartbeat(ct);
@@ -1506,6 +1514,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 StopHeartbeat();
                 StopPtyReaper();
                 _outgoing.Stop();
+                _gitPlaces.Stop();
                 if (_ws != null)
                 {
                     if (_ws.State == WebSocketState.Open)
@@ -2541,6 +2550,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 }
                 await SendAsync(session.StartedMessage(ptySessionId, reattached: false), ct);
                 Log($"PTY session {ptySessionId} started");
+                // After pty.started: the backend knows the PTY when its place arrives
+                var startedIn = _ptyCwd[ptySessionId];
+                RunInBackground("git place", () => _gitPlaces.RefreshAsync(ptySessionId, startedIn, ct));
             }
             catch (Exception ex)
             {
@@ -2972,6 +2984,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _updates?.Detach(this);
         StopHeartbeat();
         _outgoing.Dispose();
+        _gitPlaces.Dispose();
         _cliSessionUsageTimer?.Dispose();
         _cliSessionUsageTimer = null;
         _rebootCheckTimer?.Dispose();
