@@ -104,7 +104,7 @@ public static class ReviewCommands
             {
                 var fix = Prop(d, "fixRunId") is { } fixRun ? $" (fix run {fixRun})" : "";
                 var comment = Prop(d, "comment") is { } c ? $": {OneLine(c, 200)}" : "";
-                Console.WriteLine($"  {PropDate(d, "at"),-22} {Prop(d, "action")}{fix}{comment}");
+                Console.WriteLine($"  {PropDate(d, "at"),-22} {Prop(d, "action")}{WorkflowRoles.OnBehalfOf(d)}{fix}{comment}");
             }
         }
 

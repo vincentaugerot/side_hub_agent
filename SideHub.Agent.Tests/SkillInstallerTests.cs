@@ -244,6 +244,18 @@ public class SkillInstallerTests : IDisposable
         Assert.Contains("# Shared rules", File.ReadAllText(Path.Combine(_repo, "AGENTS.override.md")));
     }
 
+    [Fact]
+    public async Task Skill_documents_the_roles_of_a_launch_without_em_dash()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        var skill = File.ReadAllText(Path.Combine(_repo, ".claude", "commands", "sidehub.md"));
+        Assert.Contains("automation run <id> [--agent <id>] [--input key=value]* [--role key=<e-mail>]*", skill);
+        Assert.Contains("--role qa=alice@example.com", skill);
+        Assert.Contains("po, pm, architect, dev, qa", skill);
+        Assert.DoesNotContain("\u2014", skill);
+    }
+
     private string Git(params string[] args)
     {
         var psi = new ProcessStartInfo("git") { WorkingDirectory = _repo, RedirectStandardOutput = true, RedirectStandardError = true };

@@ -695,10 +695,13 @@ public class SideHubApiClient : IDisposable
     }
 
     public async Task<JsonElement> RunWorkflowAsync(
-        string workflowId, string agentId, string provider, IReadOnlyDictionary<string, string>? inputs = null)
+        string workflowId, string agentId, string provider, IReadOnlyDictionary<string, string>? inputs = null,
+        IReadOnlyDictionary<string, List<string>>? roleHolders = null)
     {
         var body = new Dictionary<string, object?> { ["agentId"] = agentId, ["provider"] = provider };
         if (inputs is { Count: > 0 }) body["inputs"] = inputs;
+        // Roles not given keep the workflow's default holders.
+        if (roleHolders is { Count: > 0 }) body["roleHolders"] = roleHolders;
         var resp = await _http.PostAsJsonAsync($"api/workflows/{workflowId}/run", body);
         await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();

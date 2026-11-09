@@ -1,0 +1,152 @@
+using System.Text.Json;
+
+namespace SideHub.Cli.Commands;
+
+/// <summary>
+/// Roles of a workflow (SideHub doc 72): a step given to a role (po, pm, architect, dev, qa) waits for one of the
+/// members who hold it on the execution. <c>workflow run --role qa=alice@x.io</c> picks the holders at launch, in
+/// place of the workflow's default holders; <c>workflow get</c> and <c>workflow execution-get</c> show them.
+/// </summary>
+public static class WorkflowRoles
+{
+    public const string Flag = "--role";
+
+    /// <summary>
+    /// Collects every <c>--role key=holder</c> (repeatable, several holders separated by commas): a holder is a member's
+    /// e-mail or id. A key given twice adds its holders; keys match without case, as SideHub compares them.
+    /// </summary>
+    public static bool TryCollect(string[] args, out Dictionary<string, List<string>> holders, out string? error)
+    {
+        holders = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        error = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] != Flag) continue;
+            var pair = i + 1 < args.Length ? args[i + 1] : "";
+            var separator = pair.IndexOf('=');
+            var key = separator > 0 ? pair[..separator].Trim() : "";
+            var members = separator > 0
+                ? pair[(separator + 1)..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : [];
+            if (key.Length == 0 || members.Length == 0)
+            {
+                error = $"{Flag} expects key=<member e-mail or id>, e.g. {Flag} qa=alice@example.com (got '{pair}').";
+                return false;
+            }
+            if (!holders.TryGetValue(key, out var list))
+                holders[key] = list = [];
+            foreach (var member in members)
+                if (!list.Contains(member, StringComparer.OrdinalIgnoreCase))
+                    list.Add(member);
+            i++;
+        }
+        return true;
+    }
+
+    /// <summary>The lines of <c>workflow get</c> for the workflow's roles; none when it has no role.</summary>
+    public static IEnumerable<string> DescribeWorkflowRoles(JsonElement workflow)
+    {
+        var roles = Items(workflow, "roles");
+        if (roles.Count == 0)
+            yield break;
+        yield return $"Roles (workflow run {Flag} key=<e-mail>, default holders otherwise):";
+        foreach (var role in roles)
+        {
+            var defaults = Holders(role, "defaultHolders");
+            var holders = defaults.Count == 0 ? "no default holder" : $"default holders: {string.Join(", ", defaults)}";
+            yield return $"  {Name(role)}: {holders}";
+            if (Prop(role, "description") is { Length: > 0 } description)
+                yield return $"      {description.ReplaceLineEndings(" ")}";
+        }
+    }
+
+    /// <summary>"qa (QA)" for a step given to a role, with the role's label when the workflow defines it; null otherwise.</summary>
+    public static string? StepRole(JsonElement step, JsonElement workflow)
+    {
+        if (Prop(step, "role") is not { Length: > 0 } key)
+            return null;
+        var role = Items(workflow, "roles").FirstOrDefault(r => string.Equals(Prop(r, "key"), key, StringComparison.OrdinalIgnoreCase));
+        return role.ValueKind == JsonValueKind.Object ? Name(role) : key;
+    }
+
+    /// <summary>
+    /// The lines of <c>workflow execution-get</c> for the holders frozen on the execution. Reads a list of roles
+    /// (<c>[{ key, label, holders }]</c>) or a map from key to holders.
+    /// </summary>
+    public static IEnumerable<string> DescribeExecutionHolders(JsonElement execution)
+    {
+        if (execution.ValueKind != JsonValueKind.Object || !execution.TryGetProperty("roleHolders", out var roleHolders))
+            yield break;
+
+        var lines = new List<string>();
+        if (roleHolders.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var role in roleHolders.EnumerateArray().Where(r => r.ValueKind == JsonValueKind.Object))
+                lines.Add($"  {Name(role)}: {HolderList(Holders(role, "holders"))}");
+        }
+        else if (roleHolders.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var role in roleHolders.EnumerateObject())
+            {
+                var holders = role.Value.ValueKind == JsonValueKind.Object ? Holders(role.Value, "holders") : HoldersOf(role.Value);
+                lines.Add($"  {role.Name}: {HolderList(holders)}");
+            }
+        }
+        if (lines.Count == 0)
+            yield break;
+        yield return "Role holders:";
+        foreach (var line in lines)
+            yield return line;
+    }
+
+    /// <summary>" on behalf of the qa holder" when an owner or admin took the decision in place of the role's holders.</summary>
+    public static string OnBehalfOf(JsonElement decision, string property = "onBehalfOfRole") =>
+        Prop(decision, property) is { Length: > 0 } role ? $" on behalf of the {role} holder" : "";
+
+    private static string HolderList(IReadOnlyList<string> holders) =>
+        holders.Count == 0 ? "nobody" : string.Join(", ", holders);
+
+    private static string Name(JsonElement role)
+    {
+        var key = Prop(role, "key") ?? "?";
+        return Prop(role, "label") is { Length: > 0 } label && !string.Equals(label, key, StringComparison.Ordinal)
+            ? $"{key} ({label})" : key;
+    }
+
+    private static List<string> Holders(JsonElement owner, string property) =>
+        owner.ValueKind == JsonValueKind.Object && owner.TryGetProperty(property, out var holders) ? HoldersOf(holders) : [];
+
+    /// <summary>Each holder as its e-mail (its id otherwise), marked when it is no longer an active member.</summary>
+    private static List<string> HoldersOf(JsonElement holders)
+    {
+        if (holders.ValueKind != JsonValueKind.Array)
+            return [];
+        var list = new List<string>();
+        foreach (var holder in holders.EnumerateArray())
+        {
+            if (holder.ValueKind == JsonValueKind.String)
+            {
+                list.Add(holder.GetString()!);
+                continue;
+            }
+            if (holder.ValueKind != JsonValueKind.Object)
+                continue;
+            var name = Prop(holder, "email") ?? Prop(holder, "userId") ?? Prop(holder, "id");
+            if (name is null)
+                continue;
+            var inactive = (holder.TryGetProperty("isActive", out var a) || holder.TryGetProperty("active", out a))
+                && a.ValueKind == JsonValueKind.False;
+            list.Add(inactive ? $"{name} (inactive)" : name);
+        }
+        return list;
+    }
+
+    private static List<JsonElement> Items(JsonElement owner, string property) =>
+        owner.ValueKind == JsonValueKind.Object && owner.TryGetProperty(property, out var items) && items.ValueKind == JsonValueKind.Array
+            ? items.EnumerateArray().Where(i => i.ValueKind == JsonValueKind.Object).ToList()
+            : [];
+
+    private static string? Prop(JsonElement el, string name) =>
+        el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() : null;
+}

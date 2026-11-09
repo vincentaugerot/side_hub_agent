@@ -72,6 +72,8 @@ public static class WorkflowCommands
                 Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}): {Prop(p, "label")}");
             }
         }
+        foreach (var line in WorkflowRoles.DescribeWorkflowRoles(result))
+            Console.WriteLine(line);
         Console.WriteLine();
         if (result.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)
         {
@@ -87,6 +89,8 @@ public static class WorkflowCommands
                     ? tm.GetInt32() + " min" : "-";
                 Console.WriteLine($"  [{order}] {name} ({sid})");
                 Console.WriteLine($"      timeout: {timeout}");
+                if (WorkflowRoles.StepRole(s, result) is { } role)
+                    Console.WriteLine($"      given to: {role}");
                 if (!string.IsNullOrEmpty(outputDriveItemId))
                     Console.WriteLine($"      output → drive item: {outputDriveItemId}");
                 else
@@ -358,12 +362,17 @@ public static class WorkflowCommands
 
         if (string.IsNullOrEmpty(workflowId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli workflow run <workflowId> [--agent <id>] [--provider <p>] [--input key=value]*");
+            Console.Error.WriteLine("Usage: sidehub-cli workflow run <workflowId> [--agent <id>] [--provider <p>] [--input key=value]* [--role key=<e-mail>]*");
             return 1;
         }
         if (!TryCollectPairs(args, "--input", out var inputs, out var inputError))
         {
             Console.Error.WriteLine($"Error: {inputError}");
+            return 1;
+        }
+        if (!WorkflowRoles.TryCollect(args, out var roleHolders, out var roleError))
+        {
+            Console.Error.WriteLine($"Error: {roleError}");
             return 1;
         }
         if (string.IsNullOrEmpty(agentId))
@@ -372,7 +381,7 @@ public static class WorkflowCommands
             return 1;
         }
 
-        var result = await client.RunWorkflowAsync(workflowId, agentId, provider, inputs);
+        var result = await client.RunWorkflowAsync(workflowId, agentId, provider, inputs, roleHolders);
 
         if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
         else Console.WriteLine($"Started workflow execution: {Prop(result, "id") ?? Prop(result, "executionId") ?? "?"}");
@@ -403,6 +412,13 @@ public static class WorkflowCommands
         Console.WriteLine($"Completed: {PropDate(result, "completedAt")}");
         var err = Prop(result, "errorMessage");
         if (!string.IsNullOrEmpty(err)) Console.WriteLine($"Error:     {err}");
+        var holders = WorkflowRoles.DescribeExecutionHolders(result).ToList();
+        if (holders.Count > 0)
+        {
+            Console.WriteLine();
+            foreach (var line in holders)
+                Console.WriteLine(line);
+        }
 
         if (result.TryGetProperty("stepExecutions", out var steps) && steps.ValueKind == JsonValueKind.Array)
         {
@@ -414,7 +430,12 @@ public static class WorkflowCommands
                 var name = Prop(s, "stepName") ?? "";
                 var status = Prop(s, "status") ?? "";
                 var output = Prop(s, "outputDriveItemId");
-                Console.WriteLine($"  [{order}] {name}: {status}{(string.IsNullOrEmpty(output) ? "" : $" → drive {output}")}");
+                var role = Prop(s, "role") is { Length: > 0 } r ? $" [{r}]" : "";
+                Console.WriteLine($"  [{order}] {name}{role}: {status}{(string.IsNullOrEmpty(output) ? "" : $" → drive {output}")}");
+                if (s.TryGetProperty("approval", out var approval) && Prop(approval, "decision") is { } decision)
+                    Console.WriteLine($"      {decision} by {Prop(approval, "decidedByEmail") ?? "?"}{WorkflowRoles.OnBehalfOf(approval)}");
+                if (Prop(s, "validatedByEmail") is { } validatedBy)
+                    Console.WriteLine($"      validated by {validatedBy}{WorkflowRoles.OnBehalfOf(s, "validatedOnBehalfOfRole")}");
             }
         }
         return 0;

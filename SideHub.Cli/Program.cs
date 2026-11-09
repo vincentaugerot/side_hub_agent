@@ -109,7 +109,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  automation list");
     Console.Error.WriteLine("  automation get <id>");
     Console.Error.WriteLine("  automation create --name \"...\" --prompt \"...\" [--cron \"...\" [--description \"...\"]] [--agent <id>] [--provider <cli>] [--model <model>]");
-    Console.Error.WriteLine("  automation run <id> [--agent <id>] [--provider <p>] [--input key=value]*");
+    Console.Error.WriteLine("  automation run <id> [--agent <id>] [--provider <p>] [--input key=value]* [--role key=<e-mail>]*");
     Console.Error.WriteLine("  automation pause <id> | resume <id>");
     Console.Error.WriteLine("  automation delete <id> [--yes]");
     Console.Error.WriteLine("  automation schedule add <id> --cron \"...\" [--description \"...\"] [--agent <id>]");
@@ -134,7 +134,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow update-step <wfId> <stepId> [--name] [--prompt] [--input-drive]* [--input-step]* [--clear-inputs] [--output-path] [--output-drive | --clear-output-drive] [--timeout]");
     Console.Error.WriteLine("  workflow delete-step <wfId> <stepId> [--yes]");
     Console.Error.WriteLine("  workflow reorder-steps <wfId> <stepId1> <stepId2> [...]");
-    Console.Error.WriteLine("  workflow run <wfId> [--agent <id>] [--provider <p>] [--input key=value]*");
+    Console.Error.WriteLine("  workflow run <wfId> [--agent <id>] [--provider <p>] [--input key=value]* [--role key=<e-mail>]*");
     Console.Error.WriteLine("  workflow executions <wfId> [--limit N]");
     Console.Error.WriteLine("  workflow execution-get <executionId>");
     Console.Error.WriteLine("  workflow execution-runs <executionId>");
