@@ -37,3 +37,22 @@ public class PtySessionTests
         Assert.Equal(SpawnedAt, parsed.ToUniversalTime());
     }
 }
+
+/// <summary>pty.foreground says what runs in a terminal; a shell at its prompt is sent as an explicit null.</summary>
+public class PtyForegroundMessageTests
+{
+    [Theory]
+    [InlineData("sleep")]
+    [InlineData(null)]
+    public void TheProcessIsAlwaysWritten(string? process)
+    {
+        var json = JsonSerializer.Serialize(new Models.PtyForegroundMessage { PtySessionId = "terminal-1", Process = process },
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal("pty.foreground", doc.RootElement.GetProperty("type").GetString());
+        Assert.Equal("terminal-1", doc.RootElement.GetProperty("ptySessionId").GetString());
+        Assert.True(doc.RootElement.TryGetProperty("process", out var written));
+        Assert.Equal(process, written.GetString());
+    }
+}

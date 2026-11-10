@@ -12,6 +12,7 @@ public class NodePtyExecutor : IAsyncDisposable
     private Process? _nodeProcess;
     private Func<string, Task>? _onOutput;
     private Func<int, Task>? _onExit;
+    private Func<PtyForeground, Task>? _onForeground;
     private readonly object _lock = new();
     private bool _hasExited;
     private bool _isStopping;
@@ -40,6 +41,9 @@ public class NodePtyExecutor : IAsyncDisposable
             }
         }
     }
+
+    /// <summary>What runs in the foreground of the terminal, as the helper last said; null until it says (Windows).</summary>
+    public PtyForeground? Foreground { get; private set; }
 
     /// <summary>
     /// Gets all buffered PTY output history.
@@ -112,7 +116,8 @@ public class NodePtyExecutor : IAsyncDisposable
         int rows = 24,
         IReadOnlyDictionary<string, string>? environment = null,
         SecretMasker? secretMasker = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<PtyForeground, Task>? onForeground = null)
     {
         lock (_lock)
         {
@@ -124,6 +129,7 @@ public class NodePtyExecutor : IAsyncDisposable
 
         _onOutput = onOutput;
         _onExit = onExit;
+        _onForeground = onForeground;
         _secretMasker = secretMasker;
         _columns = columns;
         _rows = rows;
@@ -277,6 +283,17 @@ public class NodePtyExecutor : IAsyncDisposable
                             }
                             break;
 
+                        case "foreground":
+                            if (root.TryGetProperty("process", out var processProp)
+                                && processProp.ValueKind is JsonValueKind.String or JsonValueKind.Null)
+                            {
+                                var foreground = new PtyForeground(processProp.GetString());
+                                Foreground = foreground;
+                                if (_onForeground != null)
+                                    await _onForeground(foreground);
+                            }
+                            break;
+
                         case "error":
                             var message = root.GetProperty("message").GetString();
                             Console.WriteLine($"[NodePty] Error: {message}");
@@ -401,3 +418,9 @@ public class NodePtyExecutor : IAsyncDisposable
         await StopAsync();
     }
 }
+
+/// <summary>
+/// What runs in the foreground of a terminal (pty-helper's <c>foreground</c>): <paramref name="Process"/> is null while
+/// the shell waits at its prompt, else the name of the program it runs (never its arguments).
+/// </summary>
+public sealed record PtyForeground(string? Process);

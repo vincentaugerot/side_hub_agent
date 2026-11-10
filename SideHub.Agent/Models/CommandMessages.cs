@@ -543,6 +543,24 @@ public class PtyCliLaunchedMessage
 }
 
 /// <summary>
+/// What runs in the foreground of a terminal (pty-helper reads the terminal's foreground process group): null while its
+/// shell waits at the prompt, else the program's name (<c>sleep</c>, <c>npm</c>), never its arguments. Sent when it
+/// changes and again at each connection, so closing a tab asks first while a command still runs. Never sent on Windows
+/// (unknown there). Ignored by older backends.
+/// </summary>
+public class PtyForegroundMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.foreground";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("process")]
+    public string? Process { get; init; }
+}
+
+/// <summary>
 /// The coding CLI of a PTY has exited (<c>sidehub-cli launch</c> wrote <c>cli-exited</c>): the terminal is a plain
 /// shell again. The backend forgets the PTY's CLI (provider, state) so the UI stops treating it as a CLI.
 /// </summary>

@@ -1,7 +1,10 @@
 import * as pty from 'node-pty';
 import * as readline from 'readline';
+import { readFileSync } from 'fs';
+import { basename } from 'path';
 
 let ptyProcess = null;
+let ptyShell = null;
 
 // Daemon environment variables passed through to PTY sessions. Everything else is dropped:
 // the daemon may have been started from a shell holding secrets (API keys, cloud credentials,
@@ -62,6 +65,8 @@ function handleMessage(line) {
       case 'input':
         if (ptyProcess) {
           ptyProcess.write(msg.data);
+          // Enter starts (or ends) a command: say it before the next output
+          if (msg.data.includes('\r')) scheduleForegroundCheck();
         }
         break;
       case 'resize':
@@ -126,14 +131,20 @@ function startPty(config) {
       env: env
     });
 
+    ptyShell = shell;
+
     ptyProcess.onData((data) => {
       send({ type: 'output', data: data });
+      scheduleForegroundCheck();
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       send({ type: 'exit', exitCode: exitCode, signal: signal });
       ptyProcess = null;
+      stopForegroundWatch();
     });
+
+    startForegroundWatch();
 
     send({ type: 'started', shell: shell, pid: ptyProcess.pid });
   } catch (e) {
@@ -157,10 +168,80 @@ function windowsShellArgs(shell) {
 }
 
 function stopPty() {
+  stopForegroundWatch();
   if (ptyProcess) {
     ptyProcess.kill();
     ptyProcess = null;
   }
+}
+
+// What runs in the foreground of the terminal: null while the shell waits at its prompt, else the name of the
+// program it runs (`sleep`, `npm`, `claude`), never its arguments (they can hold a secret). The agent keeps the
+// backend told, so closing a tab asks first while a command still runs. Checked shortly after each output or
+// Enter (a command starts or ends with some) and every FOREGROUND_POLL_MS; sent only when it changed.
+// Unknown on Windows (ConPTY has no foreground process group): nothing is sent there.
+const FOREGROUND_POLL_MS = 2000;
+const FOREGROUND_SETTLE_MS = 200;
+const MAX_PROCESS_NAME_LENGTH = 64;
+let foregroundTimer = null;
+let foregroundPoll = null;
+let lastForeground; // undefined: nothing sent yet
+
+function startForegroundWatch() {
+  if (process.platform === 'win32') return;
+  lastForeground = undefined;
+  foregroundPoll = setInterval(checkForeground, FOREGROUND_POLL_MS);
+  scheduleForegroundCheck();
+}
+
+function stopForegroundWatch() {
+  clearInterval(foregroundPoll);
+  clearTimeout(foregroundTimer);
+  foregroundPoll = null;
+  foregroundTimer = null;
+}
+
+function scheduleForegroundCheck() {
+  if (!foregroundPoll || foregroundTimer) return;
+  foregroundTimer = setTimeout(() => {
+    foregroundTimer = null;
+    checkForeground();
+  }, FOREGROUND_SETTLE_MS);
+}
+
+function checkForeground() {
+  if (!ptyProcess) return;
+  const current = readForeground();
+  if (current === undefined || current === lastForeground) return;
+  lastForeground = current;
+  send({ type: 'foreground', process: current });
+}
+
+/** null: the shell is at its prompt; a name: the program in the foreground; undefined: not known. */
+function readForeground() {
+  try {
+    if (process.platform === 'linux') {
+      // Field 8 of /proc/<shell>/stat is the terminal's foreground process group (after the name in parentheses)
+      const stat = readFileSync(`/proc/${ptyProcess.pid}/stat`, 'utf8');
+      const tpgid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[5]);
+      if (!(tpgid > 0)) return undefined;
+      if (tpgid === ptyProcess.pid) return null;
+      return processName(readFileSync(`/proc/${tpgid}/comm`, 'utf8'));
+    }
+    // macOS: node-pty names the foreground process group's leader
+    const name = ptyProcess.process;
+    if (!name) return undefined;
+    return basename(name) === basename(ptyShell) ? null : processName(name);
+  } catch {
+    // The group ended between the two reads, or /proc is not readable: the next check tells
+    return undefined;
+  }
+}
+
+function processName(raw) {
+  // A program can rename itself with its arguments (`npm run build`): only the first word is kept
+  const name = basename(String(raw).trim().split(/\s+/)[0] || '').replace(/[\x00-\x1f\x7f]/g, '');
+  return name ? name.slice(0, MAX_PROCESS_NAME_LENGTH) : undefined;
 }
 
 rl.on('line', handleMessage);

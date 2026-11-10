@@ -2534,7 +2534,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     rows,
                     ptyEnv,
                     SecretMasker.For(message.AdditionalEnv, message.SecretKeys),
-                    ct
+                    ct,
+                    // A command started or ended in the shell: closing its tab asks first while one runs
+                    foreground => TrySendAsync(new PtyForegroundMessage { PtySessionId = ptySessionId, Process = foreground.Process }, ct)
                 );
 
                 var session = new PtySession(executor, shell, startedAt);
@@ -2941,6 +2943,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     await SendAsync(cliState, ct);
                 if (_cliMessages.Current(ptySessionId) is { } cliMessage)
                     await SendAsync(cliMessage, ct);
+                if (session.Executor.Foreground is { } foreground)
+                    await SendAsync(new PtyForegroundMessage { PtySessionId = ptySessionId, Process = foreground.Process }, ct);
             }
         }
 
