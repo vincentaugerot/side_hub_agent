@@ -2461,7 +2461,16 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     foreach (var (key, value) in _queueWorktree.TerminalEnvironment(Path.GetFullPath(_workingDirectory), worktree.Setup))
                         ptyEnv[key] = value;
                     Log($"PTY {ptySessionId} runs a queued task in {cwd} ({worktree.Branch})");
+                    // A task launched on a branch that stayed behind its base is told not to rewrite it. Not the tab
+                    // opened to integrate ("Intégrer et pousser"): it has no task, and integrating is its job.
+                    if (worktree.Behind > 0 && message.AdditionalEnv?.GetValueOrDefault(TaskIdVariable) is { Length: > 0 }
+                        && ptyEnv.GetValueOrDefault(QueueWorktree.PromptVariable) is { Length: > 0 } prompt)
+                        ptyEnv[QueueWorktree.PromptVariable] = $"{prompt}\n\n{QueueWorktree.BehindNote(worktree.Behind, worktree.Base)}";
                 }
+                // Just fetched: SideHub learns how far behind the queue's branch stays before pty.started, so the queue
+                // shows it from this task on, not at the push refused after several more.
+                try { await _outgoing.RefreshAsync(ct); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { Log($"Outgoing commits not read before PTY {ptySessionId}: {ex.Message}"); }
             }
 
             // Install the SideHub skill file (CLI commands + drive index) so any LLM

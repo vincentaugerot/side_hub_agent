@@ -94,6 +94,37 @@ public sealed class QueueWorktreeTests : IDisposable
         Assert.NotNull(prepared);
         Assert.Equal(reviewed, Git(worktree.Path, "rev-parse", "HEAD"));
         Assert.Contains(log, line => line.Contains("stays where it is"));
+        // The task is told how far behind its base it starts.
+        Assert.Equal(1, prepared.Behind);
+        Assert.Equal("origin/main", prepared.Base);
+    }
+
+    [Fact]
+    public async Task A_worktree_that_caught_up_is_not_behind()
+    {
+        if (!GitAvailable)
+            return;
+        CloneWithRemote();
+        var worktree = NewWorktree();
+        await worktree.PrepareAsync(Work, CancellationToken.None);
+        PushFromElsewhere("other.txt", "pushed meanwhile");
+
+        var prepared = await worktree.PrepareAsync(Work, CancellationToken.None);
+
+        Assert.NotNull(prepared);
+        Assert.Equal(0, prepared.Behind);
+        Assert.Null(prepared.Base);
+    }
+
+    [Fact]
+    public void The_note_of_a_branch_behind_names_its_base_and_forbids_rewriting_it()
+    {
+        var note = QueueWorktree.BehindNote(3, "origin/main");
+
+        Assert.Contains("3 commits behind `origin/main`", note);
+        Assert.Contains("do not rebase", note);
+        Assert.DoesNotContain("\u2014", note);
+        Assert.Contains("1 commit behind its base", QueueWorktree.BehindNote(1, null));
     }
 
     [Fact]

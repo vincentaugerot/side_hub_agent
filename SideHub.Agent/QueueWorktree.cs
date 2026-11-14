@@ -5,7 +5,10 @@ namespace SideHub.Agent;
 
 /// <summary>The queue's worktree, ready for a task: its path, its branch, and the setup command to run in the task's
 /// terminal before the CLI (null when there is none, or when it already succeeded there).</summary>
-public sealed record PreparedWorktree(string Path, string Branch, string? Setup);
+/// <param name="Behind">Commits of <paramref name="Base"/> the branch lacks because it could not be fast-forwarded
+/// (diverged, or local changes in the way); 0 when it is up to date.</param>
+/// <param name="Base">What the branch follows (<c>origin/main</c>), named when it stays behind.</param>
+public sealed record PreparedWorktree(string Path, string Branch, string? Setup, int Behind = 0, string? Base = null);
 
 /// <summary>
 /// Where the tasks of the agent's queue run (doc 71): a git worktree of the agent's repository at
@@ -15,7 +18,8 @@ public sealed record PreparedWorktree(string Path, string Branch, string? Setup)
 /// hand stay in the repository's folder, so the queue's work never mixes with the user's, nor in its reviews.
 /// <para>Before each task the branch is fetched and fast-forwarded, never rebased nor merged: commits already reviewed
 /// keep their hashes (doc 58 links them to their review). A branch that diverged (unpushed work while the remote moved
-/// on) stays where it is; "Intégrer et pousser" integrates it.</para>
+/// on) stays where it is; "Intégrer et pousser" integrates it. The task is still launched, but told so
+/// (<see cref="BehindNote"/>), and SideHub shows the lag on the queue at once.</para>
 /// </summary>
 public sealed class QueueWorktree
 {
@@ -30,6 +34,8 @@ public sealed class QueueWorktree
     /// <summary><c>&lt;repository&gt;/.sidehub/worktree.json</c>: <c>{ "setup": "&lt;shell command&gt;" }</c>, local to the
     /// machine like the agent's own config.</summary>
     public const string ConfigFile = "worktree.json";
+    /// <summary>The task's prompt, read by <c>sidehub-cli launch --prompt-env</c> (the CLI's <c>LaunchCommand</c>).</summary>
+    public const string PromptVariable = "SIDEHUB_PTY_PROMPT";
 
     // The backend waits 10 s for a task's pty.started: creating the worktree takes about a second, the fetch must not
     // use the rest (the last fetched state will do).
@@ -87,15 +93,20 @@ public sealed class QueueWorktree
                     _log($"Queue worktree {Path}: fetch of {remote.Remote}/{remote.RemoteBranch} failed ({FirstLine(fetched?.Error) ?? "timed out"}), the last fetched state is used");
             }
             var target = upstream?.Ref ?? (folderBranch is null ? null : $"refs/heads/{folderBranch}");
+            var behind = 0;
             if (target is not null)
             {
                 var merged = await Git(Path, LocalTimeout, ct, "merge", "--ff-only", "--quiet", target);
                 if (merged is not { Succeeded: true })
-                    _log($"Queue worktree {Path} stays where it is: no fast-forward to {target} ({FirstLine(merged?.Error) ?? "timed out"})");
+                {
+                    behind = await BehindAsync(target, ct);
+                    _log($"Queue worktree {Path} stays where it is: no fast-forward to {target} ({FirstLine(merged?.Error) ?? "timed out"}), {behind} commit(s) behind");
+                }
             }
 
             await LinkClaudeLocalSettingsAsync(top, ct);
-            return new PreparedWorktree(Path, Branch, PendingSetup(top));
+            var baseName = upstream is { } followed ? $"{followed.Remote}/{followed.RemoteBranch}" : folderBranch;
+            return new PreparedWorktree(Path, Branch, PendingSetup(top), behind, behind > 0 ? baseName : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -105,6 +116,27 @@ public sealed class QueueWorktree
         {
             _lock.Release();
         }
+    }
+
+    /// <summary>Commits of <paramref name="target"/> not in the worktree's HEAD; 0 when git cannot tell.</summary>
+    private async Task<int> BehindAsync(string target, CancellationToken ct) =>
+        await Git(Path, LocalTimeout, ct, "rev-list", "--count", $"HEAD..{target}") is { Succeeded: true } counted
+        && int.TryParse(counted.Output.Trim(), out var count)
+            ? count
+            : 0;
+
+    /// <summary>
+    /// Added to the prompt of a task launched on a branch that stayed behind its base: the CLI must not "fix" it by
+    /// rewriting the commits already reviewed (doc 58 links them to their review by hash). Integrating is the person's
+    /// call, from "Intégrer et pousser".
+    /// </summary>
+    public static string BehindNote(int behind, string? baseName)
+    {
+        var commits = behind == 1 ? "1 commit" : $"{behind} commits";
+        var of = baseName is null ? "its base" : $"`{baseName}`";
+        return $"Note: this queue's branch is {commits} behind {of} (it could not be fast-forwarded). Work on it as it is:"
+            + " do not rebase, merge or pull, the commits already on it were reviewed and must keep their hashes."
+            + " The integration is done before the push, from SideHub.";
     }
 
     /// <summary>The worktree on its branch, made from the upstream of the folder's branch (else the folder's branch);
