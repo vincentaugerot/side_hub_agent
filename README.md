@@ -478,7 +478,7 @@ Commands:
   logs              Show agent logs (--no-follow to print and exit)
   status            Show agent status (--all: every instance)
   doctor            Show the coding CLIs the agent runs, whether they are logged in and how they are paid for,
-                    and the agents that won't start again after a reboot
+                    the agents that won't start again after a reboot, and whether a Mac goes to sleep
   service install   Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)
   service uninstall / service status   (--all: one boot entry for every agent of the machine)
   version           Print the agent's version
@@ -528,6 +528,16 @@ agent you stopped stays stopped until the next boot.
 `sidehub-agent doctor` (and the end of `setup`) lists the agents that won't start again after a reboot,
 and SideHub shows it on the agent's card (`agent.connected.supervised`).
 
+### A Mac that goes to sleep
+
+Asleep, a Mac answers no heartbeat: its agents show offline until it wakes up, and Power Nap or network
+wakes make them come and go all day. The agent notices a wake-up (the wall clock jumped between two
+heartbeats while the monotonic clock did not), logs `machine was asleep for <n>s`, reconnects at once
+instead of waiting minutes for the silent socket to time out, and tells SideHub (`agent.connected.resumedFromSleepAt`),
+which then shows the agent asleep rather than offline. `sidehub-agent doctor` reads `pmset -g custom` and warns
+when the Mac sleeps on its power adapter. To keep it awake: `sudo pmset -c sleep 0` (or System Settings,
+Battery > Options, or Energy on a desktop Mac), or `caffeinate -s` while a terminal stays open.
+
 For a hardened setup under a dedicated system user, use the templates in [`contrib/`](contrib/)
 (also installed in `/usr/local/lib/sidehub-agent/contrib/`):
 
@@ -567,7 +577,7 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 
 | Message | Purpose |
 |---|---|
-| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions, `installId`, `os`, `arch`, `selfUpdate`, `supervised`: starts again after a reboot, checked every 2 minutes) and keep-alive every 15 s |
+| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions, `installId`, `os`, `arch`, `selfUpdate`, `supervised`: starts again after a reboot, checked every 2 minutes, `resumedFromSleepAt`: last wake-up of the machine) and keep-alive every 15 s |
 | `agent.update-status` | Progress of an update: `downloading`, `waiting-idle` (with `busyReasons`), `applying`, `succeeded`, `rolled-back`, `failed`, `canceled` |
 | `pty.started` / `pty.exited` | Terminal spawned (with its real start time) / process ended (exit code) |
 | `pty.output` / `pty.history` | Terminal output, live / replayed |

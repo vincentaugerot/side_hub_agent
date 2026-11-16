@@ -602,7 +602,7 @@ public static class Commands
         Console.WriteLine("  status          Show agent status");
         Console.WriteLine("    --all         Show all registered instances");
         Console.WriteLine("  doctor          Show the coding CLIs the agent runs, whether they are logged in and how they are paid for,");
-        Console.WriteLine("                  and the agents that won't start again after a reboot");
+        Console.WriteLine("                  the agents that won't start again after a reboot, and whether a Mac goes to sleep");
         Console.WriteLine("  version         Print the agent's version");
         Console.WriteLine("  help            Show this help");
         Console.WriteLine();

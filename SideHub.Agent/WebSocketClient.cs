@@ -132,6 +132,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private const int MaxWebSocketMessageSize = 50 * 1024 * 1024; // 50 MB
 
     private int _missedHeartbeatAcks;
+    // Ticks of the heartbeat compared on both clocks: a gap on the wall clock only is a sleep of the machine
+    private SleepWatch? _sleepWatch;
+    /// <summary>When the machine last woke up from a sleep the agent noticed, sent in agent.connected; null when never.</summary>
+    private DateTime? _resumedFromSleepAt;
     private DateTime _connectedAt;
     /// <summary>Connected at least once since the process started: later failures are outages, not a broken install.</summary>
     private bool _everConnected;
@@ -1578,6 +1582,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             Arch = SelfUpdate.Arch,
             SelfUpdate = (_updates?.Support ?? SelfUpdate.Support).Message(),
             Supervised = supervised,
+            ResumedFromSleepAt = _resumedFromSleepAt,
         };
         await SendAsync(message, ct);
 
@@ -1633,10 +1638,19 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private void StartHeartbeat(CancellationToken ct)
     {
         _missedHeartbeatAcks = 0;
+        _sleepWatch = SleepWatch.StartNow();
 
         _heartbeatTimer = new Timer(
             async _ =>
             {
+                // Back from a sleep: the socket went silent without closing, the backend has already let it go
+                if (_sleepWatch?.Tick() is { } slept)
+                {
+                    _resumedFromSleepAt = DateTime.UtcNow;
+                    Log($"machine was asleep for {slept.TotalSeconds:F0}s, reconnecting now");
+                    _ws?.Abort();
+                    return;
+                }
                 if (_ws?.State == WebSocketState.Open && !ct.IsCancellationRequested)
                 {
                     try

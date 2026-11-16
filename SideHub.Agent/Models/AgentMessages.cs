@@ -89,6 +89,13 @@ public class AgentConnectedMessage
     /// </summary>
     [JsonPropertyName("supervised")]
     public bool Supervised { get; init; }
+
+    /// <summary>
+    /// When the machine last woke up from a sleep the agent noticed (<see cref="SleepWatch"/>), null when it did not
+    /// since it started: SideHub then says an agent that drops is asleep rather than offline.
+    /// </summary>
+    [JsonPropertyName("resumedFromSleepAt")]
+    public DateTime? ResumedFromSleepAt { get; init; }
 }
 
 public class SelfUpdateInfo
