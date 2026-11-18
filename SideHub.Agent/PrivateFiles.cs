@@ -51,6 +51,16 @@ public static class PrivateFiles
         return new StreamWriter(path, Options(FileMode.Append));
     }
 
+    /// <summary>Opens the file for exclusive use (a lock between processes), created as 0600; an existing file is
+    /// tightened to 0600 first. Throws an <see cref="IOException"/> while another process holds it.</summary>
+    public static FileStream OpenExclusive(string path)
+    {
+        RestrictFile(path);
+        var options = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
+        if (Supported) options.UnixCreateMode = PrivateFileMode;
+        return new FileStream(path, options);
+    }
+
     /// <summary>Sets an existing file to 0600. Missing files are ignored.</summary>
     public static void RestrictFile(string path)
     {
