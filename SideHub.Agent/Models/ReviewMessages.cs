@@ -151,6 +151,49 @@ public class ReviewCaptureMessage
     public string? Error { get; init; }
 }
 
+/// <summary>
+/// The images the CLI of a run of tests saw (doc 73), copied on this machine when the run ended; asked one by one
+/// (<c>run.capture.request</c>). Not sent for a run that saw none.
+/// </summary>
+public class RunCapturesMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "run.captures";
+
+    [JsonPropertyName("runId")]
+    public required Guid RunId { get; init; }
+
+    /// <summary>Named like those of a first round: <c>r1-3.png</c>.</summary>
+    [JsonPropertyName("captures")]
+    public required IReadOnlyList<ReviewCapture> Captures { get; init; }
+}
+
+/// <summary>Answer to <c>run.capture.request</c>: one image of a run of tests, as <see cref="ReviewCaptureMessage"/> gives one of a round.</summary>
+public class RunCaptureMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "run.capture";
+
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
+
+    [JsonPropertyName("runId")]
+    public required Guid RunId { get; init; }
+
+    [JsonPropertyName("image")]
+    public required string Image { get; init; }
+
+    [JsonPropertyName("mimeType")]
+    public string? MimeType { get; init; }
+
+    [JsonPropertyName("data")]
+    public string? Data { get; init; }
+
+    /// <summary><c>invalid</c>, <c>purged</c> (or never kept); null on success.</summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+}
+
 public sealed record ReviewFileChange
 {
     [JsonPropertyName("path")]

@@ -105,6 +105,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly QuestionCheckout _questionCheckout;
     // What the works the backend asked to review changed (review.changes), and their diffs on demand.
     private readonly WorkReviewTracker _reviews;
+    // The images the CLI of a run of tests saw (run.captures), kept when the run ends and read on demand (doc 73).
+    private readonly TestRunCaptures _testCaptures;
+    // The runs of tests going on, by PTY: what is needed to read their images once the PTY is gone.
+    private readonly ConcurrentDictionary<string, TestRun> _testRuns = new();
     // Where peer review runs read the end of the reviewed round, one disposable worktree per run.
     private readonly PeerReviewCheckout _peerReviews;
     // Where the tasks of the queue run (doc 71), out of the folder the user works in.
@@ -204,6 +208,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _reviews = new WorkReviewTracker(Path.Combine(runDir, "reviews"), _fifoAgentKey,
             new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
             _usageCollector.ReadFinalMessage, Log, ReadSeenImages, workingDirectory);
+        _testCaptures = new TestRunCaptures(Path.Combine(runDir, "tests"),
+            new PendingRunCapturesStore(Path.Combine(pendingDirectory, "captures")), TrySendAsync, ReadSeenImages, Log);
         _peerReviews = new PeerReviewCheckout(_fifoAgentKey, _reviews, Log);
         _queueWorktree = new QueueWorktree(_fifoAgentKey, Log);
         // The queue's work is pushed from its worktree once there is one; before, from the agent's folder.
@@ -1494,6 +1500,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
                 RunInBackground("pending review.changes replay", () => _reviews.ReplayPendingAsync(ct));
                 RunInBackground("review purge", () => _reviews.PurgeIfDueAsync(ct));
+                RunInBackground("pending run.captures replay", () => _testCaptures.ReplayPendingAsync(ct));
+                RunInBackground("test captures purge", () => Task.Run(_testCaptures.PurgeIfDue, ct));
                 RunInBackground("peer review checkouts purge", () => _peerReviews.PurgeLeftoversAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
                 _outgoing.Start(ct);
@@ -1867,6 +1875,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "review.capture.request":
                     RunInBackground("review.capture.request", () => HandleReviewCaptureRequestAsync(message, ct));
+                    break;
+                case "run.capture.request":
+                    RunInBackground("run.capture.request", () => HandleRunCaptureRequestAsync(message, ct));
                     break;
                 case "git.push.request":
                     RunInBackground("git.push.request", () => HandleGitPushRequestAsync(message, ct));
@@ -2613,7 +2624,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }
                 if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is { } runId)
+                {
                     _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId], checkout);
+                    if (runKind == TestRunCaptures.RunKind)
+                        _testRuns[ptySessionId] = new TestRun(runId, _ptyCwd[ptySessionId], startedAt, message.AdditionalEnv, message.SecretKeys);
+                }
                 StartFifoReader(ptySessionId, ct);
                 // The worktree's setup runs first: the shell reads the CLI's line, typed after pty.started, once it ends.
                 if (worktree?.Setup is not null)
@@ -2814,6 +2829,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             await _reviews.EndRoundAsync(ptySessionId, trigger, kind: null, CancellationToken.None);
             await _reviews.ForgetTerminalAsync(ptySessionId, CancellationToken.None);
             await _outgoing.RefreshAsync(CancellationToken.None);
+            // Before the usage too: the images a run of tests saw are read in the transcripts of the CLI sessions it tracks.
+            if (_testRuns.TryGetValue(ptySessionId, out var testRun))
+            {
+                await _testCaptures.KeepAsync(testRun.RunId, ptySessionId, testRun.Cwd,
+                    _usageCollector.RunCliSessions(ptySessionId), testRun.StartedAt, CancellationToken.None);
+                _testRuns.TryRemove(ptySessionId, out _);
+            }
             if (_usageCollector.IsTracked(ptySessionId))
                 await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
             await _cliSessionUsage.PtyClosedAsync(ptySessionId, trigger, CancellationToken.None);
@@ -2914,15 +2936,34 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         await SendAsync(answer, ct);
     }
 
+    /// <summary>An image kept with a run of tests (doc 73), read from this machine.</summary>
+    private async Task HandleRunCaptureRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || !Guid.TryParse(message.RunId, out var runId) || message.Image is not { Length: > 0 } image)
+        {
+            Log("run.capture.request ignored: requestId, runId and image are required");
+            return;
+        }
+        var answer = await _testCaptures.CaptureAsync(message.RequestId, runId, image, ct);
+        Log($"Test run {runId} capture {image}: " + (answer.Error ?? $"{answer.Data!.Length} base64 chars"));
+        await SendAsync(answer, ct);
+    }
+
+    /// <summary>A run of tests going on in a PTY: its folder, when it started, and its secrets (masked in the titles of its images).</summary>
+    private sealed record TestRun(Guid RunId, string Cwd, DateTimeOffset StartedAt, Dictionary<string, string>? Env, List<string>? SecretKeys);
+
     /// <summary>
     /// The images the CLIs of a terminal saw since a moment (doc 70): the tool calls of their transcripts, read with the
-    /// parser of the Conversation mode, in the order they came. Titles masked with the PTY's secrets while it has them.
+    /// parser of the Conversation mode, in the order they came. Titles masked with the PTY's secrets while it has them
+    /// (a run of tests keeps its own until its images are read).
     /// </summary>
     private IReadOnlyList<WorkReviewTracker.SeenImage> ReadSeenImages(
         string ptySessionId, string cwd, IReadOnlyList<KeyValuePair<string, string>> cliSessions, DateTimeOffset since)
     {
         var seen = new List<WorkReviewTracker.SeenImage>();
-        var masker = _ptySecrets.TryGetValue(ptySessionId, out var secrets) ? SecretMasker.For(secrets.Env, secrets.Keys) : null;
+        var masker = _ptySecrets.TryGetValue(ptySessionId, out var secrets) ? SecretMasker.For(secrets.Env, secrets.Keys)
+            : _testRuns.TryGetValue(ptySessionId, out var testRun) ? SecretMasker.For(testRun.Env, testRun.SecretKeys)
+            : null;
         foreach (var (cliSessionId, provider) in cliSessions.Distinct())
         {
             if (!_lastMessageReaders.TryGetValue(provider, out var reader)

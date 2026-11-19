@@ -516,4 +516,145 @@ public sealed class WorkReviewTests : IDisposable
         await tracker.PurgeAsync(DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
         Assert.Equal(ReviewDiffErrors.Purged, (await tracker.CaptureAsync("c4", reviewId, "r1-1.png", CancellationToken.None)).Error);
     }
+
+    // ----- The images a run of tests saw (doc 73) -----
+
+    private static readonly IReadOnlyList<KeyValuePair<string, string>> OneCliSession = [new(Guid.NewGuid().ToString(), "claude")];
+    private readonly List<RunCapturesMessage> _sentCaptures = [];
+
+    private string TestsFolder => Path.Combine(_run.FullName, "tests");
+
+    private TestRunCaptures TestCaptures(WorkReviewTracker.CaptureReader reader) => new(
+        TestsFolder, new PendingRunCapturesStore(Path.Combine(_run.FullName, "pending", "captures")),
+        (report, _) =>
+        {
+            if (!_backendUp)
+                return Task.FromResult(false);
+            lock (_sentCaptures)
+                _sentCaptures.Add(report);
+            return Task.FromResult(true);
+        },
+        reader, _ => { });
+
+    private static WorkReviewTracker.SeenImage Seen(string call, byte[] bytes, string tool = "mcp__playwright__browser_take_screenshot", string type = "image/png") =>
+        new(new Conversation.ToolImage($"{call}-1{(type == "image/jpeg" ? ".jpg" : ".png")}", call, DateTime.UtcNow, Convert.ToBase64String(bytes), type, null), tool, "https://app.test/cockpit");
+
+    [Fact]
+    public async Task A_run_of_tests_keeps_a_copy_of_the_images_its_cli_saw_served_until_the_purge()
+    {
+        var screenshot = RepoPath("shot.png");
+        await File.WriteAllBytesAsync(screenshot, Png);
+        var other = Png.Append((byte)0).ToArray();
+        var since = DateTimeOffset.UtcNow.AddMinutes(-5);
+        (string Pty, string Cwd, int Sessions, DateTimeOffset Since)? asked = null;
+        var captures = TestCaptures((pty, cwd, sessions, from) =>
+        {
+            asked = (pty, cwd, sessions.Count, from);
+            return
+            [
+                new(new Conversation.ToolImage("toolu_1-1.png", "toolu_1", DateTime.UtcNow, null, null, screenshot), "mcp__playwright__browser_take_screenshot", "shot.png"),
+                // The same image read again: kept once
+                Seen("toolu_2", Png, "Read"),
+                new(new Conversation.ToolImage("toolu_3-1.png", "toolu_3", DateTime.UtcNow, null, null, RepoPath("gone.png")), "Read", "gone.png"),
+                Seen("toolu_4", other, type: "image/jpeg"),
+            ];
+        });
+        var runId = Guid.NewGuid();
+
+        await captures.KeepAsync(runId, "run-1", _repo.FullName, OneCliSession, since, CancellationToken.None);
+        // The screenshot is overwritten after the run: the execution keeps what the CLI saw
+        File.Delete(screenshot);
+
+        Assert.Equal(("run-1", _repo.FullName, 1, since), asked);
+        var report = Assert.Single(_sentCaptures);
+        Assert.Equal(runId, report.RunId);
+        Assert.Equal(["r1-1.png", "r1-2.jpg"], report.Captures.Select(c => c.Name));
+        Assert.Equal("Read", report.Captures[0].Tool);
+        Assert.Equal("https://app.test/cockpit", report.Captures[1].Title);
+        Assert.Equal(other.Length, report.Captures[1].Size);
+        Assert.Equal(["r1-1.png", "r1-2.jpg"], Directory.GetFiles(Path.Combine(TestsFolder, $"{runId:N}")).Select(Path.GetFileName).Order());
+
+        var served = await captures.CaptureAsync("c1", runId, "r1-2.jpg", CancellationToken.None);
+        Assert.Equal(("c1", runId, "r1-2.jpg", "image/jpeg", null), (served.RequestId, served.RunId, served.Image, served.MimeType, served.Error));
+        Assert.Equal(other, Convert.FromBase64String(served.Data!));
+        Assert.Equal("invalid", (await captures.CaptureAsync("c2", runId, "../r1-1.png", CancellationToken.None)).Error);
+        Assert.Equal("invalid", (await captures.CaptureAsync("c3", runId, "toolu_1-1.png", CancellationToken.None)).Error);
+        Assert.Equal(ReviewDiffErrors.Purged, (await captures.CaptureAsync("c4", runId, "r1-3.png", CancellationToken.None)).Error);
+        Assert.Equal(ReviewDiffErrors.Purged, (await captures.CaptureAsync("c5", Guid.NewGuid(), "r1-1.png", CancellationToken.None)).Error);
+
+        // Kept for the 30 days of a review, counted from the day they were written
+        captures.Purge(DateTimeOffset.UtcNow - WorkReviewTracker.Retention);
+        Assert.Null((await captures.CaptureAsync("c6", runId, "r1-1.png", CancellationToken.None)).Error);
+        Directory.SetLastWriteTimeUtc(Path.Combine(TestsFolder, $"{runId:N}"), DateTime.UtcNow.AddDays(-31));
+        Directory.CreateDirectory(Path.Combine(TestsFolder, "not-a-run"));
+        Directory.SetLastWriteTimeUtc(Path.Combine(TestsFolder, "not-a-run"), DateTime.UtcNow.AddDays(-31));
+        captures.Purge(DateTimeOffset.UtcNow - WorkReviewTracker.Retention);
+        Assert.Equal(ReviewDiffErrors.Purged, (await captures.CaptureAsync("c7", runId, "r1-1.png", CancellationToken.None)).Error);
+        Assert.Equal(["not-a-run"], Directory.GetDirectories(TestsFolder).Select(Path.GetFileName));
+    }
+
+    [Fact]
+    public async Task A_run_of_tests_keeps_the_last_images_only_named_as_the_backend_expects()
+    {
+        var images = Enumerable.Range(1, KeptCaptures.Max + 5).Select(i => Seen($"toolu_{i}", Png.Append((byte)i).ToArray())).ToList();
+        var captures = TestCaptures((_, _, _, _) => images);
+
+        await captures.KeepAsync(Guid.NewGuid(), "run-1", _repo.FullName, OneCliSession, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var report = Assert.Single(_sentCaptures);
+        Assert.Equal(KeptCaptures.Max, report.Captures.Count);
+        Assert.Equal(Png.Length + 1, report.Captures[0].Size);
+        Assert.All(report.Captures, c => Assert.Matches(@"^r\d{1,4}-\d{1,3}\.(png|jpg|webp)$", c.Name));
+        var json = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(System.Text.Json.JsonSerializer.Serialize(report));
+        Assert.Equal("run.captures", json.GetProperty("type").GetString());
+        Assert.Equal(report.RunId, json.GetProperty("runId").GetGuid());
+        Assert.Equal(["name", "at", "tool", "title", "size"], json.GetProperty("captures")[0].EnumerateObject().Select(p => p.Name));
+        var answer = await captures.CaptureAsync("c1", report.RunId, "r1-20.png", CancellationToken.None);
+        Assert.Equal(
+            ["type", "requestId", "runId", "image", "mimeType", "data", "error"],
+            System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(System.Text.Json.JsonSerializer.Serialize(answer)).EnumerateObject().Select(p => p.Name));
+        Assert.Equal("run.capture", answer.Type);
+    }
+
+    [Fact]
+    public async Task A_run_of_scripts_or_one_that_saw_no_image_keeps_and_sends_nothing()
+    {
+        var read = 0;
+        var captures = TestCaptures((_, _, _, _) =>
+        {
+            read++;
+            return [new(new Conversation.ToolImage("toolu_1-1.png", "toolu_1", DateTime.UtcNow, null, null, RepoPath("gone.png")), "Read", "gone.png")];
+        });
+
+        // A shell that plays scripts starts no CLI: there is no transcript to read
+        await captures.KeepAsync(Guid.NewGuid(), "run-1", _repo.FullName, [], DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(0, read);
+        await captures.KeepAsync(Guid.NewGuid(), "run-2", _repo.FullName, OneCliSession, DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(1, read);
+
+        Assert.Empty(_sentCaptures);
+        Assert.False(Directory.Exists(TestsFolder));
+    }
+
+    [Fact]
+    public async Task The_captures_of_a_run_of_tests_wait_for_the_backend()
+    {
+        var captures = TestCaptures((_, _, _, _) => [Seen("toolu_1", Png)]);
+        var runId = Guid.NewGuid();
+        _backendUp = false;
+
+        await captures.KeepAsync(runId, "run-1", _repo.FullName, OneCliSession, DateTimeOffset.UtcNow, CancellationToken.None);
+        await captures.ReplayPendingAsync(CancellationToken.None);
+        Assert.Empty(_sentCaptures);
+
+        _backendUp = true;
+        // Another agent instance of the same folder, after a restart: what waits is on disk
+        await TestCaptures((_, _, _, _) => []).ReplayPendingAsync(CancellationToken.None);
+        await captures.ReplayPendingAsync(CancellationToken.None);
+
+        var report = Assert.Single(_sentCaptures);
+        Assert.Equal(runId, report.RunId);
+        Assert.Equal("r1-1.png", Assert.Single(report.Captures).Name);
+        Assert.Equal(Png.Length, report.Captures[0].Size);
+    }
 }

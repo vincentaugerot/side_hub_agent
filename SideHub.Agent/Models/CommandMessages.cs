@@ -143,6 +143,10 @@ public class IncomingMessage
     [JsonPropertyName("reviewId")]
     public string? ReviewId { get; init; }
 
+    /// <summary>run.capture.request: the run of tests (a GUID) whose image is asked.</summary>
+    [JsonPropertyName("runId")]
+    public string? RunId { get; init; }
+
     /// <summary>git.push.request: the commit the push was confirmed for (it must still be HEAD).</summary>
     [JsonPropertyName("head")]
     public string? Head { get; init; }

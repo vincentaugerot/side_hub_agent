@@ -205,6 +205,10 @@ public sealed class RunUsageCollector
                 .ToList();
     }
 
+    /// <summary>The CLI sessions a tracked run announced (cliSessionId → provider), empty for an unknown run.</summary>
+    public IReadOnlyList<KeyValuePair<string, string>> RunCliSessions(string ptySessionId) =>
+        _runs.TryGetValue(ptySessionId, out var run) ? run.CliSessions.ToArray() : [];
+
     private IEnumerable<(IUsageHarvester Harvester, RunUsageContext Context)> Contexts(TrackedRun run) =>
         Contexts(run.PtySessionId, run.RunId, run.Cwd, run.CliSessions.ToArray(), run.StartedAt);
 

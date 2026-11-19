@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using SideHub.Agent.Conversation;
 using SideHub.Agent.Models;
 using SideHub.Agent.Usage;
@@ -27,9 +25,6 @@ public sealed class WorkReviewTracker
     /// <summary>The activity of the folder is only needed while rounds can overlap.</summary>
     public static readonly TimeSpan ActivityRetention = TimeSpan.FromDays(7);
     public const int MaxSummaryLength = 4000;
-    /// <summary>Images kept for a round (doc 70): the last ones the CLI saw.</summary>
-    public const int MaxCaptures = 20;
-    private const long MaxCapturesBytes = 40 * 1024 * 1024;
 
     private static readonly TimeSpan PurgeInterval = TimeSpan.FromHours(24);
     private static readonly JsonSerializerOptions RecordJson = new() { WriteIndented = true };
@@ -688,9 +683,8 @@ public sealed class WorkReviewTracker
     private string CapturesFolder(Guid reviewId) => Path.Combine(_directory, $"{reviewId:N}");
 
     /// <summary>
-    /// Copies the last images the CLI saw during the round next to the review's record (doc 70): a screenshot file is
-    /// often overwritten or deleted soon after, the review is read days later. Same image twice kept once. Null when
-    /// there is none, or it could not be done (logged, never in the way of the report).
+    /// Copies the last images the CLI saw during the round next to the review's record (<see cref="KeptCaptures"/>).
+    /// Null when there is none, or it could not be done (logged, never in the way of the report).
     /// </summary>
     private IReadOnlyList<ReviewCapture>? KeepCaptures(
         Guid reviewId, int round, string ptySessionId, string cwd, IReadOnlyList<KeyValuePair<string, string>> sessions, DateTimeOffset since)
@@ -699,34 +693,10 @@ public sealed class WorkReviewTracker
             return null;
         try
         {
-            var seen = _readCaptures(ptySessionId, cwd, sessions, since);
-            var kept = new List<(SeenImage Seen, byte[] Bytes)>();
-            var hashes = new HashSet<string>(StringComparer.Ordinal);
-            long total = 0;
-            for (var i = seen.Count - 1; i >= 0 && kept.Count < MaxCaptures; i--)
-            {
-                if (ToolImages.Load(seen[i].Image).Bytes is not { } bytes || total + bytes.Length > MaxCapturesBytes
-                    || !hashes.Add(Convert.ToHexString(SHA256.HashData(bytes))))
-                    continue;
-                total += bytes.Length;
-                kept.Add((seen[i], bytes));
-            }
-            if (kept.Count == 0)
+            var captures = KeptCaptures.Keep(CapturesFolder(reviewId), round, _readCaptures(ptySessionId, cwd, sessions, since));
+            if (captures.Count == 0)
                 return null;
-            kept.Reverse();
-            var folder = CapturesFolder(reviewId);
-            Directory.CreateDirectory(folder);
-            var captures = new List<ReviewCapture>(kept.Count);
-            foreach (var (image, bytes) in kept)
-            {
-                var name = $"r{round}-{captures.Count + 1}{Path.GetExtension(image.Image.Name)}";
-                File.WriteAllBytes(Path.Combine(folder, name), bytes);
-                captures.Add(new ReviewCapture
-                {
-                    Name = name, At = image.Image.At, Tool = image.Tool, Title = image.Title, Size = bytes.Length,
-                });
-            }
-            _log($"Review {reviewId} round {round}: {captures.Count} capture(s) kept ({total / 1024} KB)");
+            _log($"Review {reviewId} round {round}: {captures.Count} capture(s) kept ({captures.Sum(c => c.Size) / 1024} KB)");
             return captures;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -736,29 +706,15 @@ public sealed class WorkReviewTracker
         }
     }
 
-    private static readonly Regex CaptureName = new(@"^r\d{1,4}-\d{1,3}\.(?:png|jpg|webp)$", RegexOptions.CultureInvariant);
-
     /// <summary>One image of a round, kept when it ended (<see cref="KeepCaptures"/>), as base64.</summary>
     public async Task<ReviewCaptureMessage> CaptureAsync(string requestId, Guid reviewId, string image, CancellationToken ct)
     {
-        ReviewCaptureMessage Answer(string? data = null, string? error = null) => new()
+        var (data, error) = await KeptCaptures.ReadAsync(CapturesFolder(reviewId), image, ct);
+        return new ReviewCaptureMessage
         {
             RequestId = requestId, ReviewId = reviewId, Image = image, Data = data, Error = error,
             MimeType = data is null ? null : ToolImages.MediaTypeOf(image),
         };
-        if (!CaptureName.IsMatch(image))
-            return Answer(error: "invalid");
-        try
-        {
-            var path = Path.Combine(CapturesFolder(reviewId), image);
-            if (!File.Exists(path) || new FileInfo(path).Length > ToolImages.MaxBytes)
-                return Answer(error: ReviewDiffErrors.Purged);
-            return Answer(Convert.ToBase64String(await File.ReadAllBytesAsync(path, ct)));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return Answer(error: ReviewDiffErrors.Purged);
-        }
     }
 
     private string RecordPath(Guid reviewId) => Path.Combine(_directory, $"{reviewId:N}.json");
