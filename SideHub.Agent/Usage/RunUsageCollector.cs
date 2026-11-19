@@ -287,6 +287,7 @@ public sealed class RunUsageCollector
             Text = text is null ? null : Truncate(text),
             CommitSha = question.CommitSha,
             CommitDate = question.CommitDate,
+            CommitCount = question.CommitCount,
             Error = text is not null ? null : cliFound ? "no-final-message" : "no-cli-session",
         };
     }

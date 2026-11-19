@@ -100,3 +100,24 @@ public static class OutgoingErrors
     /// <summary>Anything else: authentication, network…</summary>
     public const string Failed = "failed";
 }
+
+/// <summary>
+/// The tip of the repository's default branch on <c>origin</c> (fetched first, hourly): the backend regenerates the
+/// repository card once enough commits came in since the card's commit (side_hub doc 51). Sent at connection and
+/// when it changes.
+/// </summary>
+public sealed record GitDefaultBranchMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "git.default-branch";
+
+    [JsonPropertyName("branch")]
+    public required string Branch { get; init; }
+
+    [JsonPropertyName("sha")]
+    public required string Sha { get; init; }
+
+    /// <summary>Commits reachable from <see cref="Sha"/> (<c>git rev-list --count</c>).</summary>
+    [JsonPropertyName("commitCount")]
+    public required long CommitCount { get; init; }
+}

@@ -111,6 +111,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly QueueWorktree _queueWorktree;
     // The commits of the agent's branch not pushed yet (git.outgoing), and the push confirmed from SideHub.
     private readonly OutgoingCommitsReporter _outgoing;
+    // Where the default branch is on origin (git.default-branch): the repository card is refreshed from it.
+    private readonly DefaultBranchTipReporter _defaultBranchTip;
     private readonly PtyGitPlaces _gitPlaces;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
@@ -207,6 +209,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         // The queue's work is pushed from its worktree once there is one; before, from the agent's folder.
         _outgoing = new OutgoingCommitsReporter(
             () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false), TrySendAsync, Log);
+        _defaultBranchTip = new DefaultBranchTipReporter(workingDirectory, ReadDefaultBranchAsync, TrySendAsync, Log);
         // Where each terminal works (branch, worktree), read in the folder it was started in
         _gitPlaces = new PtyGitPlaces(() => _ptyCwd.Where(entry => _ptySessions.ContainsKey(entry.Key)), TrySendAsync, Log);
         foreach (var (provider, harvester) in sessionHarvesters)
@@ -1464,6 +1467,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 RunInBackground("peer review checkouts purge", () => _peerReviews.PurgeLeftoversAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
                 _outgoing.Start(ct);
+                _defaultBranchTip.Start(ct);
                 _gitPlaces.Start(ct);
                 if (_updates is not null)
                     RunInBackground("update outcome", _updates.OnConnectedAsync);
@@ -1518,6 +1522,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 StopHeartbeat();
                 StopPtyReaper();
                 _outgoing.Stop();
+                _defaultBranchTip.Stop();
                 _gitPlaces.Stop();
                 if (_ws != null)
                 {
@@ -3022,6 +3027,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _updates?.Detach(this);
         StopHeartbeat();
         _outgoing.Dispose();
+        _defaultBranchTip.Dispose();
         _gitPlaces.Dispose();
         _cliSessionUsageTimer?.Dispose();
         _cliSessionUsageTimer = null;

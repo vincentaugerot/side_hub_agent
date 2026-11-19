@@ -4,7 +4,9 @@ using System.Text.RegularExpressions;
 namespace SideHub.Agent;
 
 /// <summary>The checkout of a question or peer review run, ready: its real path and the commit it is at.</summary>
-public sealed record PreparedCheckout(string Path, string CommitSha, DateTimeOffset CommitDate);
+/// <param name="CommitCount">Commits reachable from <paramref name="CommitSha"/>, null when not read: it lets the backend
+/// tell how many commits the default branch gained since (the repository card's refresh, side_hub doc 51).</param>
+public sealed record PreparedCheckout(string Path, string CommitSha, DateTimeOffset CommitDate, long? CommitCount = null);
 
 /// <summary>
 /// Where question runs (a read-only CLI answering a question about the repository) read the code: a detached git
@@ -98,7 +100,8 @@ public sealed partial class QuestionCheckout
                 return Fail("could not read the checkout's commit");
 
             // The real path: the CLI records it as its cwd, and the run's transcript is matched against it.
-            var prepared = new PreparedCheckout(PathConfinement.RealPath(CheckoutPath), sha, commitDate);
+            var prepared = new PreparedCheckout(PathConfinement.RealPath(CheckoutPath), sha, commitDate,
+                await OriginBranch.CountAsync(CheckoutPath, sha, ct));
             lock (_active)
                 _active.Add(ptySessionId);
             return prepared;
@@ -175,17 +178,12 @@ public sealed partial class QuestionCheckout
         return false;
     }
 
-    /// <summary>Updates <c>origin/&lt;branch&gt;</c> only: no tag, no submodule, no FETCH_HEAD, no gc. A failure
-    /// (offline, slow remote) is logged and the last fetched tip is used.</summary>
+    /// <summary>Updates <c>origin/&lt;branch&gt;</c> only. A failure (offline, slow remote) is logged and the last
+    /// fetched tip is used.</summary>
     private async Task FetchAsync(string branch, CancellationToken ct)
     {
-        var result = await GitCommand.RunAsync(CheckoutPath, FetchTimeout,
-            ["-c", "gc.auto=0", "-c", "maintenance.auto=false",
-             "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
-             "origin", $"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
-            keepSshEnvironment: true, ct);
-        if (result is not { Succeeded: true })
-            _log($"git fetch origin {branch} failed ({FirstLine(result?.Error) ?? "timed out"}); using the last fetched origin/{branch}");
+        if (await OriginBranch.FetchAsync(CheckoutPath, branch, FetchTimeout, ct) is { } error)
+            _log($"git fetch origin {branch} failed ({error}); using the last fetched origin/{branch}");
     }
 
     private static Task<GitCommand.Result?> GitAsync(string directory, TimeSpan timeout, CancellationToken ct, params string[] args) =>
@@ -196,14 +194,7 @@ public sealed partial class QuestionCheckout
         string.Equals(Path.TrimEndingDirectorySeparator(PathConfinement.RealPath(a)), Path.TrimEndingDirectorySeparator(PathConfinement.RealPath(b)),
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
-    /// <summary>The first line of git's error, without the credentials a remote URL may carry.</summary>
-    private static string? FirstLine(string? error) =>
-        error?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() is { } line
-            ? UrlCredentials().Replace(line, "://***@")
-            : null;
-
-    [GeneratedRegex(@"://[^/@\s]+@")]
-    private static partial Regex UrlCredentials();
+    private static string? FirstLine(string? error) => OriginBranch.FirstLine(error);
 
     private PreparedCheckout? Fail(string reason)
     {

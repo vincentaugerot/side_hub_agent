@@ -84,6 +84,9 @@ public sealed class QuestionCheckoutTests : IDisposable
         Assert.NotEqual(first.CommitSha, second.CommitSha);
         Assert.Equal(Git(Pusher, "rev-parse", "HEAD"), second.CommitSha);
         Assert.Equal("v2", File.ReadAllText(Path.Combine(second.Path, "README.md")));
+        // The card's refresh counts the commits the default branch gained since the one a question read
+        Assert.Equal(1, first.CommitCount);
+        Assert.Equal(2, second.CommitCount);
         Assert.Equal(before, DeveloperState());
     }
 

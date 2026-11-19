@@ -691,6 +691,11 @@ public class RunAnswerMessage
     [JsonPropertyName("commitDate")]
     public DateTimeOffset? CommitDate { get; init; }
 
+    /// <summary>Commits reachable from <see cref="CommitSha"/>: the backend compares it with the default branch's tip
+    /// to refresh the repository card every N commits (side_hub doc 51). Null when not read.</summary>
+    [JsonPropertyName("commitCount")]
+    public long? CommitCount { get; init; }
+
     /// <summary>Why there is no text (e.g. "no-final-message"); null when there is.</summary>
     [JsonPropertyName("error")]
     public string? Error { get; init; }
