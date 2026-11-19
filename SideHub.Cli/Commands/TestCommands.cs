@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SideHub.Cli.Commands;
 
@@ -7,7 +9,8 @@ namespace SideHub.Cli.Commands;
 /// End-to-end tests of the workspace (SideHub doc 73). Writing them: a test is a file (<c>sidehub.qa/v1</c>: given,
 /// steps with when / then, values used and produced), created active from a terminal its user opened, proposed as a
 /// draft from a run or a queued task. Playing them: <c>test run</c> launches an execution; inside a run of an
-/// execution, <c>test result</c> and <c>test value</c> report each step and each value as the tests are played.
+/// execution, <c>test result</c> and <c>test value</c> report each step and each value as the tests are played; a run
+/// of scripts types <c>test play</c>, which plays the scripted tests with Playwright and sends its report.
 /// </summary>
 public static class TestCommands
 {
@@ -354,7 +357,7 @@ public static class TestCommands
 
     public static async Task<int> ResultAsync(SideHubApiClient client, string[] args, bool json)
     {
-        const string usage = "Usage: sidehub-cli test result <test id> --step <n> --status passed|failed|inconclusive [--then \"<n>=verified|failed|no-evidence: <what you observed>\"]* [--evidence \"...\"] [--observed \"...\"] [--console \"...\"]* [--http \"...\"]*";
+        const string usage = "Usage: sidehub-cli test result <test id> --step <n> --status passed|failed|inconclusive [--then \"<n>=verified|failed|no-evidence: <what you observed>\"]* [--evidence \"...\"] [--observed \"...\"] [--console \"...\"]* [--http \"...\"]* [--capture \"drive:<id>\"]";
         var key = Positionals(args, "--step", "--status", "--then", "--evidence", "--observed", "--console", "--http", "--capture").FirstOrDefault();
         var status = GetOption(args, "--status");
         if (key is null || !int.TryParse(GetOption(args, "--step"), out var step) || step < 1 || status is null || !StepStatuses.Contains(status))
@@ -430,13 +433,226 @@ public static class TestCommands
         return 0;
     }
 
-    /// <summary><c>test results import</c>: the report of a Playwright run. Scripted tests are not played yet.</summary>
-    public static Task<int> ResultsAsync(SideHubApiClient client, string[] args, bool json)
+    /// <summary>
+    /// <c>test play</c>: what a run of scripts types. Asks SideHub which scripted tests the run plays, plays them with
+    /// Playwright (one command per Playwright project) and sends the report: SideHub reads the result of each test in it.
+    /// </summary>
+    /// <param name="start">Starts a command and waits for it (tests give their own).</param>
+    public static async Task<int> PlayAsync(SideHubApiClient client, string[] args, bool json, ScriptedTests.Starter? start = null)
     {
-        Console.Error.WriteLine(args.FirstOrDefault() == "import"
-            ? "Error: scripted tests are not played yet: SideHub plays the tests written for an agent (mode: agent). Report each step with: sidehub-cli test result"
-            : "Usage: sidehub-cli test results import <playwright-report.json>");
-        return Task.FromResult(1);
+        if (ExecutionId() is not { } executionId)
+            return 1;
+
+        var plan = ScriptedTests.ReadPlan(await client.GetTestScriptPlanAsync(executionId));
+        if (plan.Scripts.Count == 0)
+        {
+            Console.WriteLine("No scripted test to play in this run.");
+            return 0;
+        }
+
+        var root = Directory.GetCurrentDirectory();
+        var groups = ScriptedTests.Groups(plan.Scripts, root);
+        var fallbacks = ScriptedTests.Fallbacks(plan.Scripts, Environment.GetEnvironmentVariable);
+        var (npx, leading) = ScriptedTests.Npx(Environment.GetEnvironmentVariable("PATH"));
+        // The values a script writes can be secrets: a folder of this user only.
+        var temp = Directory.CreateTempSubdirectory("sidehub-test-play-").FullName;
+        try
+        {
+            var reports = new List<JsonObject>();
+            var errors = new List<string>();
+            var valuesFiles = new List<string>();
+            for (var i = 0; i < groups.Count; i++)
+            {
+                var group = groups[i];
+                var arguments = ScriptedTests.Arguments(group, plan.Recheck);
+                var reportFile = Path.Combine(temp, $"report-{i + 1}.json");
+                valuesFiles.Add(Path.Combine(temp, $"values-{i + 1}.json"));
+
+                var startInfo = new ProcessStartInfo(npx) { UseShellExecute = false, WorkingDirectory = group.Folder };
+                foreach (var argument in leading.Concat(arguments))
+                    startInfo.ArgumentList.Add(argument);
+                startInfo.Environment[ScriptedTests.ReportFileVariable] = reportFile;
+                startInfo.Environment[ScriptedTests.LegacyReportFileVariable] = reportFile;
+                startInfo.Environment[ScriptedTests.ValuesFileVariable] = valuesFiles[^1];
+                // Nobody answers "Ok to proceed?" in a run: without Playwright in the project, npx stops instead of installing one.
+                if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("npm_config_yes")))
+                    startInfo.Environment["npm_config_yes"] = "false";
+                foreach (var (variable, value) in fallbacks)
+                    startInfo.Environment[variable] = value;
+
+                var relative = Path.GetRelativePath(root, group.Folder);
+                var where = relative == "." ? "the folder of the run" : relative;
+                Console.WriteLine($"Playing {group.Files.Count} file(s) in {where}: {ScriptedTests.Display(arguments)}");
+                // The exit code of Playwright says nothing here: the report does.
+                int exitCode;
+                try
+                {
+                    exitCode = (start ?? ScriptedTests.Start)(startInfo);
+                }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    errors.Add($"npx could not start in {where}: {OneLine(ex.Message, 300)}");
+                    Console.Error.WriteLine($"Error: {errors[^1]}");
+                    continue;
+                }
+
+                if (ScriptedTests.ReadReport(reportFile) is { } report)
+                    reports.Add(report);
+                else
+                {
+                    errors.Add($"Playwright left no report for {string.Join(", ", group.Files)} (exit code {exitCode}): check that it is installed in {where} (npm ci) and that its configuration loads.");
+                    Console.Error.WriteLine($"Error: {errors[^1]}");
+                }
+            }
+
+            return await ImportReportAsync(client, executionId, plan, ScriptedTests.Merge(reports, errors), valuesFiles, json);
+        }
+        finally
+        {
+            try { Directory.Delete(temp, recursive: true); } catch (IOException) { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// <c>test results import</c>: the report of a Playwright run somebody played themselves in a run of scripts
+    /// (<c>npx playwright test --reporter=json</c>), sent like <c>test play</c> sends its own.
+    /// </summary>
+    public static async Task<int> ResultsAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        const string usage = "sidehub-cli test results import <playwright-report.json> [--values <values.json>]";
+        if (args.FirstOrDefault() != "import")
+        {
+            Console.Error.WriteLine($"Usage: {usage}");
+            return 1;
+        }
+        var file = Positionals(args[1..], "--values").FirstOrDefault();
+        if (await ReadFileAsync(file, usage) is not { } content)
+            return 1;
+        var valuesFile = GetOption(args, "--values");
+        if (valuesFile is not null && !File.Exists(valuesFile))
+        {
+            Console.Error.WriteLine($"Error: file not found: {valuesFile}");
+            return 1;
+        }
+        if (ExecutionId() is not { } executionId)
+            return 1;
+
+        JsonObject? report = null;
+        try { report = JsonNode.Parse(content) as JsonObject; } catch (JsonException) { /* said below */ }
+        if (report is null)
+        {
+            Console.Error.WriteLine($"Error: {file} is not the JSON report of Playwright (npx playwright test --reporter=json).");
+            return 1;
+        }
+
+        var plan = ScriptedTests.ReadPlan(await client.GetTestScriptPlanAsync(executionId));
+        return await ImportReportAsync(client, executionId, plan, report, valuesFile is null ? [] : [valuesFile], json);
+    }
+
+    /// <summary>Sends what a Playwright run left: the values its scripts wrote, the image of each failure, then its report.</summary>
+    private static async Task<int> ImportReportAsync(
+        SideHubApiClient client, string executionId, ScriptedTests.Plan plan, JsonObject report, IReadOnlyList<string> valuesFiles, bool json)
+    {
+        // Values first: the import can end the execution, and a value is only set while it plays. A value is never printed.
+        var values = new Dictionary<string, string>();
+        foreach (var file in valuesFiles)
+        {
+            var written = ScriptedTests.ReadValues(file, out var problem);
+            foreach (var (name, value) in written)
+                values[name] = value;
+            if (problem is not null)
+                Console.Error.WriteLine($"Warning: the values file {Path.GetFileName(file)} was not read: {problem}.");
+        }
+        foreach (var (name, value) in values)
+        {
+            var secret = plan.IsSecret(name);
+            try
+            {
+                await client.SetTestValueAsync(executionId, name, value, secret);
+                if (!json)
+                    Console.WriteLine($"Set {name}{(secret ? " (secret)" : "")}.");
+            }
+            catch (HttpRequestException ex)
+            {
+                Console.Error.WriteLine($"Warning: the value '{name}' was not set: {ex.Message}");
+            }
+        }
+
+        var captures = await SendFailureImagesAsync(client, plan.Number, report, json);
+        ScriptedTests.Slim(report);
+        var ack = await client.ImportTestResultsAsync(executionId, report, captures);
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(ack));
+            return 0;
+        }
+
+        var tests = Items(ack, "tests");
+        Console.WriteLine($"Report sent: {tests.Count} scripted test(s).");
+        foreach (var test in tests)
+        {
+            var status = Prop(test, "status") == "failed" && Bool(test, "confirmed") ? "failed (confirmed)" : Prop(test, "status");
+            var detail = string.Join(": ", new[]
+            {
+                Prop(test, "stoppedAt") is { } step ? $"step {step}" : null,
+                Prop(test, "reason") is { } reason ? OneLine(reason, 140) : null,
+            }.OfType<string>());
+            Console.WriteLine($"  {status,-18} {Prop(test, "key")}{(detail.Length > 0 ? $"  {detail}" : "")}");
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// The image of each failure, sent to the Drive in <c>Tests / Execution #n</c>: its path in the report to its
+    /// <c>drive:</c> reference. What cannot be sent is a warning: the result of the test does not depend on it.
+    /// </summary>
+    private static async Task<Dictionary<string, string>> SendFailureImagesAsync(SideHubApiClient client, int number, JsonObject report, bool json)
+    {
+        var captures = new Dictionary<string, string>();
+        var images = ScriptedTests.FailureImages(report, ScriptedTests.IsUsableImage);
+        if (images.Count == 0)
+            return captures;
+
+        try
+        {
+            var tree = await client.GetDriveTreeAsync();
+            var tests = await FolderAsync(client, tree.TryGetProperty("items", out var items) ? items : tree, "Tests", parentId: null);
+            var folder = await FolderAsync(client, tests.Children, $"Execution #{number}", tests.Id);
+            foreach (var image in images)
+            {
+                try
+                {
+                    var sent = await client.UploadFileAsync(image, folder.Id, ScriptedTests.CaptureTitle(image));
+                    if (Prop(sent, "id") is not { } id)
+                        continue;
+                    captures[image] = $"drive:{id}";
+                    if (!json)
+                        Console.WriteLine($"Capture sent: {Path.GetFileName(image)} (drive:{id})");
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException or UnauthorizedAccessException or InvalidOperationException or TaskCanceledException)
+                {
+                    Console.Error.WriteLine($"Warning: the capture {Path.GetFileName(image)} was not sent: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
+        {
+            Console.Error.WriteLine($"Warning: the captures of the failures were not sent to the Drive: {ex.Message}");
+        }
+        return captures;
+    }
+
+    /// <summary>The folder named <paramref name="title"/> among <paramref name="level"/>, created when there is none.</summary>
+    private static async Task<(string Id, JsonElement Children)> FolderAsync(SideHubApiClient client, JsonElement level, string title, string? parentId)
+    {
+        var found = level.ValueKind == JsonValueKind.Array
+            ? level.EnumerateArray().FirstOrDefault(n => Prop(n, "type") == "folder" && Prop(n, "status") != "archived" && Prop(n, "title") == title)
+            : default;
+        if (Prop(found, "id") is { } id)
+            return (id, found.TryGetProperty("children", out var children) ? children : default);
+
+        var created = await client.CreateDriveItemAsync(title, content: null, parentId, type: "folder");
+        return (Prop(created, "id") ?? throw new InvalidOperationException($"the folder '{title}' could not be created"), default);
     }
 
     // ----- Helpers -----
@@ -482,7 +698,8 @@ public static class TestCommands
     {
         "not-critical" => "the environment only plays critical tests",
         "no-cleanup" => "it writes data without a cleanup, and real data live in this environment",
-        "script" => "scripted tests are not played yet",
+        "script" => "scripted tests were not played by this execution",
+        "script-repository" => "its script is in a repository this agent's folder does not hold",
         "not-active" => "it is a draft or archived",
         _ => reason ?? "skipped",
     };

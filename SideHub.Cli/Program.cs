@@ -166,8 +166,10 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  test export [--repository <name|id>] [--output <file>]");
     Console.Error.WriteLine("  test run [--environment <name>] [--critical | --repository <name|id> | --test <key>...] [--fallbacks] [--cli claude|codex|agy|copilot] [--model <model>] [--agent <id>]");
     Console.Error.WriteLine("  test status [<number|executionId>]");
-    Console.Error.WriteLine("  test result <test id> --step <n> --status passed|failed|inconclusive [--then \"<n>=verified|failed|no-evidence: ...\"]* [--observed \"...\"] [--console \"...\"]* [--http \"...\"]*   (inside a run of a test execution)");
+    Console.Error.WriteLine("  test result <test id> --step <n> --status passed|failed|inconclusive [--then \"<n>=verified|failed|no-evidence: ...\"]* [--observed \"...\"] [--console \"...\"]* [--http \"...\"]* [--capture \"drive:<id>\"]   (inside a run of a test execution)");
     Console.Error.WriteLine("  test value set <name> \"<value>\" [--secret] | get <name>   (inside a run of a test execution)");
+    Console.Error.WriteLine("  test play   (what a run of scripts types: plays its scripted tests with Playwright and sends the report)");
+    Console.Error.WriteLine("  test results import <playwright-report.json> [--values <values.json>]   (inside a run of scripts)");
     Console.Error.WriteLine("  review list [--status pending|validated|fix-requested|dismissed] [--task <id>] [--run <id>] [--limit N]");
     Console.Error.WriteLine("  review get <reviewId>");
     Console.Error.WriteLine("  review diff <reviewId> [--round N] [--path <file>]");
@@ -217,7 +219,7 @@ var writeActions = new HashSet<string>
     "decide", "peer", "approve", "reject", "request-changes", "tool",
     "add", "remove", "skip", "push",
     "ask", "set", "trigger-add", "trigger-update", "trigger-delete",
-    "archive", "result", "results"
+    "archive", "result", "results", "play"
 };
 // `test status` reads an execution, unlike `task status` which changes a task.
 if (pipelineMode == "plan" && writeActions.Contains(action) && (domain, action) is not ("test", "status"))
@@ -338,6 +340,7 @@ try
         ("test", "status") => await TestCommands.StatusAsync(client, restArgs, jsonOutput),
         ("test", "result") => await TestCommands.ResultAsync(client, restArgs, jsonOutput),
         ("test", "value") => await TestCommands.ValueAsync(client, restArgs, jsonOutput),
+        ("test", "play") => await TestCommands.PlayAsync(client, restArgs, jsonOutput),
         ("test", "results") => await TestCommands.ResultsAsync(client, restArgs, jsonOutput),
         ("review", "list") => await ReviewCommands.ListAsync(client, restArgs, jsonOutput),
         ("review", "get") => await ReviewCommands.GetAsync(client, restArgs, jsonOutput),

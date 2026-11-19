@@ -8,7 +8,8 @@ namespace SideHub.Agent.Tests;
 
 /// <summary>
 /// A SideHub API on the loopback interface for <c>sidehub-cli</c> tests: answers the longest path suffix registered with
-/// <see cref="Respond"/> (the path without its query string) and records each request: path and query, method, body.
+/// <see cref="Respond"/> (the path without its query string, for one method when it names one) and records each
+/// request: path and query, method, body.
 /// </summary>
 internal sealed class FakeSideHubApi : IDisposable
 {
@@ -18,7 +19,7 @@ internal sealed class FakeSideHubApi : IDisposable
     }
 
     private readonly HttpListener _listener;
-    private readonly ConcurrentDictionary<string, (string Body, HttpStatusCode Status, string ContentType)> _responses = new();
+    private readonly ConcurrentDictionary<(string? Method, string PathSuffix), (string Body, HttpStatusCode Status, string ContentType)> _responses = new();
     private readonly ConcurrentQueue<Call> _calls = new();
 
     public string Url { get; }
@@ -49,8 +50,9 @@ internal sealed class FakeSideHubApi : IDisposable
         _ = ServeAsync();
     }
 
-    public void Respond(string pathSuffix, string body, HttpStatusCode status = HttpStatusCode.OK, string contentType = "application/json") =>
-        _responses[pathSuffix] = (body, status, contentType);
+    /// <param name="method">Only for that method (a path read with GET and written with POST); any method when null.</param>
+    public void Respond(string pathSuffix, string body, HttpStatusCode status = HttpStatusCode.OK, string contentType = "application/json", string? method = null) =>
+        _responses[(method, pathSuffix)] = (body, status, contentType);
 
     private async Task ServeAsync()
     {
@@ -66,10 +68,13 @@ internal sealed class FakeSideHubApi : IDisposable
             var path = context.Request.Url!.AbsolutePath;
             _calls.Enqueue(new Call(context.Request.HttpMethod, context.Request.Url.PathAndQuery, requestBody));
 
-            var match = _responses.Keys.Where(path.EndsWith).OrderByDescending(k => k.Length).FirstOrDefault();
-            var (body, status, contentType) = match is null
+            var matches = _responses.Keys
+                .Where(k => path.EndsWith(k.PathSuffix) && (k.Method is null || k.Method == context.Request.HttpMethod))
+                .OrderByDescending(k => k.PathSuffix.Length).ThenByDescending(k => k.Method is not null)
+                .ToList();
+            var (body, status, contentType) = matches.Count == 0
                 ? ("""{"error":"not found"}""", HttpStatusCode.NotFound, "application/json")
-                : _responses[match];
+                : _responses[matches[0]];
             context.Response.StatusCode = (int)status;
             if (body.Length > 0)
             {

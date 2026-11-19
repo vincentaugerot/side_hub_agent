@@ -1,0 +1,373 @@
+{
+  "config": {
+    "configFile": "/repo/playwright.config.ts",
+    "rootDir": "/repo/e2e",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 2
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/repo/test-results",
+        "repeatEach": 1,
+        "retries": 1,
+        "metadata": {
+          "actualWorkers": 2
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/repo/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "runAgents": "none",
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.58.1",
+    "workers": 2,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "access.spec.ts",
+      "file": "access.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "the sign-in page leads to the creation of an account",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 942,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "open the sign-in page",
+                      "duration": 648
+                    },
+                    {
+                      "title": "ask to create an account",
+                      "duration": 118
+                    }
+                  ],
+                  "startTime": "2026-11-19T23:46:46.439Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "9e7a053a61b60e2af93d-872138aad3f0fe74a949",
+          "file": "access.spec.ts",
+          "line": 4,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "broken.spec.ts",
+      "file": "broken.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "the cockpit opens without signing in (fails on purpose)",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 1,
+                  "status": "failed",
+                  "duration": 3818,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n\n    at /repo/e2e/broken.spec.ts:12:24\n    at /repo/e2e/broken.spec.ts:11:14",
+                    "location": {
+                      "file": "/repo/e2e/broken.spec.ts",
+                      "column": 24,
+                      "line": 12
+                    },
+                    "snippet": "  10 |\n  11 |   await test.step('stay on the cockpit', async () => {\n> 12 |     await expect(page).toHaveURL(/\\/cockpit$/, { timeout: 3_000 });\n     |                        ^\n  13 |   });\n  14 | });\n  15 |"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/repo/e2e/broken.spec.ts",
+                        "column": 24,
+                        "line": 12
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n\n\n  10 |\n  11 |   await test.step('stay on the cockpit', async () => {\n> 12 |     await expect(page).toHaveURL(/\\/cockpit$/, { timeout: 3_000 });\n     |                        ^\n  13 |   });\n  14 | });\n  15 |\n    at /repo/e2e/broken.spec.ts:12:24\n    at /repo/e2e/broken.spec.ts:11:14"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "open the cockpit without a session",
+                      "duration": 630
+                    },
+                    {
+                      "title": "stay on the cockpit",
+                      "duration": 3007,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n\n    at /repo/e2e/broken.spec.ts:12:24\n    at /repo/e2e/broken.spec.ts:11:14",
+                        "location": {
+                          "file": "/repo/e2e/broken.spec.ts",
+                          "column": 24,
+                          "line": 12
+                        },
+                        "snippet": "  10 |\n  11 |   await test.step('stay on the cockpit', async () => {\n> 12 |     await expect(page).toHaveURL(/\\/cockpit$/, { timeout: 3_000 });\n     |                        ^\n  13 |   });\n  14 | });\n  15 |"
+                      }
+                    }
+                  ],
+                  "startTime": "2026-11-19T23:46:46.417Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/repo/test-results/broken-the-cockpit-opens-w-5111f-igning-in-fails-on-purpose--chromium/test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/repo/test-results/broken-the-cockpit-opens-w-5111f-igning-in-fails-on-purpose--chromium/error-context.md"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/repo/e2e/broken.spec.ts",
+                    "column": 24,
+                    "line": 12
+                  }
+                },
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 3720,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n\n    at /repo/e2e/broken.spec.ts:12:24\n    at /repo/e2e/broken.spec.ts:11:14",
+                    "location": {
+                      "file": "/repo/e2e/broken.spec.ts",
+                      "column": 24,
+                      "line": 12
+                    },
+                    "snippet": "  10 |\n  11 |   await test.step('stay on the cockpit', async () => {\n> 12 |     await expect(page).toHaveURL(/\\/cockpit$/, { timeout: 3_000 });\n     |                        ^\n  13 |   });\n  14 | });\n  15 |"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/repo/e2e/broken.spec.ts",
+                        "column": 24,
+                        "line": 12
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n\n\n  10 |\n  11 |   await test.step('stay on the cockpit', async () => {\n> 12 |     await expect(page).toHaveURL(/\\/cockpit$/, { timeout: 3_000 });\n     |                        ^\n  13 |   });\n  14 | });\n  15 |\n    at /repo/e2e/broken.spec.ts:12:24\n    at /repo/e2e/broken.spec.ts:11:14"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "steps": [
+                    {
+                      "title": "open the cockpit without a session",
+                      "duration": 526
+                    },
+                    {
+                      "title": "stay on the cockpit",
+                      "duration": 3022,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveURL\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nExpected pattern: \u001b[32m/\\/cockpit$/\u001b[39m\nReceived string:  \u001b[31m\"https://www.sidehub.io/access\"\u001b[39m\nTimeout: 3000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveURL\" with timeout 3000ms\u001b[22m\n\u001b[2m    7 × unexpected value \"https://www.sidehub.io/access\"\u001b[22m\n\n    at /repo/e2e/broken.spec.ts:12:24\n    at /repo/e2e/broken.spec.ts:11:14",
+                        "location": {
+                          "file": "/repo/e2e/broken.spec.ts",
+                          "column": 24,
+                          "line": 12
+                        },
+                        "snippet": "  10 |\n  11 |   await test.step('stay on the cockpit', async () => {\n> 12 |     await expect(page).toHaveURL(/\\/cockpit$/, { timeout: 3_000 });\n     |                        ^\n  13 |   });\n  14 | });\n  15 |"
+                      }
+                    }
+                  ],
+                  "startTime": "2026-11-19T23:46:51.796Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/repo/test-results/broken-the-cockpit-opens-w-5111f-igning-in-fails-on-purpose--chromium-retry1/test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/repo/test-results/broken-the-cockpit-opens-w-5111f-igning-in-fails-on-purpose--chromium-retry1/error-context.md"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/repo/e2e/broken.spec.ts",
+                    "column": 24,
+                    "line": 12
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "8c7f8f1902ef713fcbc2-27e825c34297f87026fc",
+          "file": "broken.spec.ts",
+          "line": 5,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "values.spec.ts",
+      "file": "values.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "produces a token",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "choose a token",
+                      "duration": 1
+                    }
+                  ],
+                  "startTime": "2026-11-19T23:46:47.535Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "d2aa131e9e0635c6c4c4-f466ae46f646755171af",
+          "file": "values.spec.ts",
+          "line": 7,
+          "column": 5
+        },
+        {
+          "title": "reads the token",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "steps": [
+                    {
+                      "title": "read the token of the execution",
+                      "duration": 1
+                    }
+                  ],
+                  "startTime": "2026-11-19T23:46:47.552Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "d2aa131e9e0635c6c4c4-8c4cd3cf55f37319fcf3",
+          "file": "values.spec.ts",
+          "line": 16,
+          "column": 5
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-11-19T23:46:45.128Z",
+    "duration": 10657.065,
+    "expected": 3,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

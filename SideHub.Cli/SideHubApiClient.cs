@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SideHub.Cli;
 
@@ -1134,6 +1135,19 @@ public class SideHubApiClient : IDisposable
         await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
+
+    /// <summary>The scripted tests a run of scripts plays, and the values they read and set (its token only).</summary>
+    public async Task<JsonElement> GetTestScriptPlanAsync(string executionId)
+    {
+        var resp = await _http.GetAsync($"api/test-executions/{Uri.EscapeDataString(executionId)}/script-plan");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>The Playwright report of a run of scripts (its token only): SideHub reads the result of each test in it.</summary>
+    /// <param name="captures">The images sent to the Drive, by their path as the report writes it: <c>drive:&lt;id&gt;</c>.</param>
+    public Task<JsonElement> ImportTestResultsAsync(string executionId, JsonNode report, IReadOnlyDictionary<string, string> captures) =>
+        PostAsync($"api/test-executions/{Uri.EscapeDataString(executionId)}/results/import", new { report, captures });
 
     public void Dispose() => _http.Dispose();
 
