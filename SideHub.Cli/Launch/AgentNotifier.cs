@@ -68,16 +68,6 @@ public static class AgentNotifier
 
     public static void TaskDone() => Send(new { @event = "task-done" });
 
-    /// <summary>
-    /// A secret a test just set or read (<c>sidehub-cli test value</c>): the agent masks it in this terminal's output
-    /// from now on, like the secrets the terminal started with.
-    /// </summary>
-    public static void SecretValue(string value)
-    {
-        if (!string.IsNullOrEmpty(value))
-            Send(new { @event = "secret-value", value });
-    }
-
     private static void Send(object notification)
     {
         var channel = Environment.GetEnvironmentVariable(ChannelVariable);

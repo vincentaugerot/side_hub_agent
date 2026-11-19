@@ -170,23 +170,4 @@ public class FifoNotificationTests
     [Fact]
     public void A_line_longer_than_the_limit_is_rejected() =>
         Assert.Equal("line too long", Rejection(new string(' ', FifoNotification.MaxLineLength + 1)));
-
-    [Fact]
-    public void A_secret_a_test_set_or_read_is_accepted_to_be_masked()
-    {
-        Assert.Equal(new FifoNotification.SecretValue("s3cret-pw é"), Parse("""{"event":"secret-value","value":"s3cret-pw é"}"""));
-    }
-
-    [Theory]
-    [InlineData("""{"event":"secret-value"}""")]
-    [InlineData("""{"event":"secret-value","value":""}""")]
-    [InlineData("""{"event":"secret-value","value":42}""")]
-    [InlineData("""{"event":"secret-value","value":"with\u0007bell"}""")]
-    public void A_secret_value_without_a_usable_text_is_rejected(string line) =>
-        Assert.Equal("invalid value", Rejection(line));
-
-    [Fact]
-    public void A_secret_value_longer_than_what_sidehub_keeps_is_rejected() =>
-        Assert.Equal("invalid value",
-            Rejection($$"""{"event":"secret-value","value":"{{new string('a', FifoNotification.MaxSecretValueLength + 1)}}"}"""));
 }

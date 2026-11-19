@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using SideHub.Cli.Launch;
 
 namespace SideHub.Cli.Commands;
 
@@ -418,14 +417,8 @@ public static class TestCommands
         if (action == "set")
         {
             var value = rest[1];
-            var secret = args.Contains("--secret");
-            // Before anything else: the agent masks the value in this terminal from now on.
-            if (secret)
-                AgentNotifier.SecretValue(value);
-            var set = await client.SetTestValueAsync(executionId, name, value, secret);
-            // Declared secret by its step: masked too, even set without the flag.
-            if (!secret && Bool(set, "secret"))
-                AgentNotifier.SecretValue(value);
+            // A secret is masked in this terminal by SideHub itself, which tells the agent once it recorded the value.
+            var set = await client.SetTestValueAsync(executionId, name, value, args.Contains("--secret"));
             Console.WriteLine(json
                 ? SideHubApiClient.Serialize(set)
                 : $"Set {Prop(set, "name")}{(Bool(set, "secret") ? " (secret: masked in this terminal, deleted when the execution ends)" : "")}.");
@@ -433,10 +426,7 @@ public static class TestCommands
         }
 
         var read = await client.GetTestValueAsync(executionId, name);
-        var content = Prop(read, "value") ?? "";
-        if (Bool(read, "secret"))
-            AgentNotifier.SecretValue(content);
-        Console.WriteLine(json ? SideHubApiClient.Serialize(read) : content);
+        Console.WriteLine(json ? SideHubApiClient.Serialize(read) : Prop(read, "value") ?? "");
         return 0;
     }
 

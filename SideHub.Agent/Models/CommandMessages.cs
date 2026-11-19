@@ -120,6 +120,11 @@ public class IncomingMessage
     [JsonPropertyName("on")]
     public bool? On { get; init; }
 
+    /// <summary><c>pty.mask-secret</c>: a secret that appeared while the PTY runs (a value a test just set, SideHub doc 73),
+    /// to mask in its output from now on.</summary>
+    [JsonPropertyName("value")]
+    public string? Value { get; init; }
+
     // file.write fields
     [JsonPropertyName("path")]
     public string? Path { get; init; }

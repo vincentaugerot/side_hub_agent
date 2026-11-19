@@ -626,12 +626,6 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     await ReportCliStateAsync(ptySessionId, changed, ct);
                     return;
 
-                // Written by `sidehub-cli test value set --secret|get`: a secret a test just set or read (a password it
-                // chose). Masked in what the terminal prints from now on, in its last lines and in its CLI's messages.
-                case FifoNotification.SecretValue added:
-                    MaskInPty(ptySessionId, added.Value);
-                    return;
-
                 // Written by Claude's StopFailure hook through `sidehub-cli cli-state claude limit`: its plan ran out.
                 case FifoNotification.CliLimitReached limit:
                     if (_ptySessions.ContainsKey(ptySessionId))
@@ -648,6 +642,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
     /// <summary>Prefix of the entries <see cref="MaskInPty"/> adds to a PTY's secrets: never a variable of its shell.</summary>
     private const string AddedSecretPrefix = "SIDEHUB_MASKED_VALUE_";
+
+    /// <summary>Longest secret accepted from <c>pty.mask-secret</c> (what SideHub keeps of a value of a test execution).</summary>
+    private const int MaxMaskedSecretLength = 2000;
 
     /// <summary>
     /// A secret that appeared while the PTY runs joins the ones it started with: the output reader masks it from now on,
@@ -1848,6 +1845,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "pty.conversation.watch":
                     HandleConversationWatch(message, ct);
+                    break;
+                // The backend recorded a secret a run of a test execution just set (`sidehub-cli test value set --secret`).
+                // It comes from the backend and not from the terminal: a CLI may hide the notification FIFO from the
+                // commands it runs (claude 2.1 does), and the backend is the one that knows the value is a secret.
+                case "pty.mask-secret":
+                    if (message.PtySessionId is { Length: > 0 } maskedPty && message.Value is { Length: > 0 and <= MaxMaskedSecretLength } secret)
+                        MaskInPty(maskedPty, secret);
                     break;
                 case "pty.conversation.image":
                     RunInBackground("conversation-image", () => HandleConversationImageAsync(message, ct));
