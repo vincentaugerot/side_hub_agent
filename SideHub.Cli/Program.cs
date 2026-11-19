@@ -68,8 +68,8 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  cockpit reliability [--since <7d|date>] [--until <date>]");
     Console.Error.WriteLine("  run list [--status <status>] [--runtime <cli>] [--agent <id>] [--since <24h|7d|date>] [--until <date>] [--limit N] [--page N]");
     Console.Error.WriteLine("  run get <runId>");
-    Console.Error.WriteLine("  drive list [--parent <id>]");
-    Console.Error.WriteLine("  drive read <pageId>");
+    Console.Error.WriteLine("  drive list [--parent <id>] [--type <okf type>] [--tag <tag>] [--status draft|stable|deprecated] [--stale]");
+    Console.Error.WriteLine("  drive read <pageId> | --path </folder/page.md>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
     Console.Error.WriteLine("  drive create --title \"...\" [--content \"...\" | --file <path>] [--parent <id>] [--type page|spreadsheet|folder]");
     Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\" | --file <path>]");

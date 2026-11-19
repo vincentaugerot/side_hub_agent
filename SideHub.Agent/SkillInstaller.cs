@@ -58,12 +58,13 @@ front matter between `---` lines, then Markdown. Only `type` is required, fill i
 - `type` is free text: Decision, Playbook, Reference, Module, API Endpoint, Meeting Notes...
 - `generated.by` is you as `<cli>/<model>` (`claude/opus-5-5`, `codex/<model>`), `at` the current UTC time in ISO 8601 with `Z`
 - `status: draft` until someone reviewed the page, `stable` once checked, `deprecated` when another page replaces it
-- Never write `verified` with a `human:` actor yourself: it says a person checked the page
+- Never write `verified` with a `human:` actor yourself: it says a person checked the page. SideHub adds it when a person
+  marks the page as verified or approves the workflow step that showed it
 - `sources`: what the page was drawn from (URL, path in the repository, another page); cite one in the text with a
   footnote whose label is its `id`
 - Link another page by its path from the folder the pages share, made of folder and page titles in lowercase with
   dashes: `[refund flow](/payments/refund-flow.md)` for the page "Refund flow" in the folder "Payments". The Drive
-  opens it in place; a link to a page not written yet is allowed
+  opens it in place (`drive read --path` follows it); a link to a page not written yet is allowed
 - When you update a page, keep its front matter and the keys you do not know, and move `generated.at` if the content changed
 - `drive create` / `drive update` warn on stderr when the front matter has no `type` or is not valid YAML
 
@@ -82,8 +83,8 @@ Environment variables are already configured in your session.
 ## Available commands
 
 ### Drive (workspace memory)
-- `sidehub-cli drive list`: List pages/folders in the Drive
-- `sidehub-cli drive read <pageId>`: Read the content of a page (text). For binary files, prints a hint to use `drive download` instead.
+- `sidehub-cli drive list`: List pages/folders in the Drive. With `--type <okf type>`, `--tag <tag>`, `--status draft|stable|deprecated` or `--stale`: only the OKF pages that match, flat
+- `sidehub-cli drive read <pageId>`: Read the content of a page (text). For binary files, prints a hint to use `drive download` instead. `drive read --path /payments/refund-flow.md` reads the page an OKF link names
 - `sidehub-cli drive download <pageId> [--output <path>] [--stdout] [--url-only]`: Download a binary file (image/PDF/...) from the Drive. Defaults to the current directory using the original filename, then prints the absolute path. Use `--output <path>` to choose a destination, `--stdout` to stream raw bytes, or `--url-only` to print just the presigned URL.
 - `sidehub-cli drive search <query>`: Search pages by title
 - `sidehub-cli drive create --title "..." --content "..."`: Create a page
@@ -355,13 +356,31 @@ report it with `sidehub-cli workflow step-fail "<reason>"`.
                 if (GetString(item, "type") == "folder")
                     lines.Add($"{indent}[folder] \"{title}\"/");
                 else if (SanitizeId(GetString(item, "id")) is { Length: > 0 } id)
-                    lines.Add($"{indent}{id}  \"{title}\"");
+                    lines.Add($"{indent}{id}  \"{title}\"{OkfSuffix(item)}");
             }
 
             if (item.TryGetProperty("children", out var children))
                 total += CollectPageTitles(children, lines, depth + 1);
         }
         return total;
+    }
+
+    /// <summary>
+    /// For an OKF concept, what it is and how far to trust it, after its title: <c>  [Decision, draft, verified]
+    /// "description"</c>. Type and description are user data too, made inert like the titles.
+    /// </summary>
+    private static string OkfSuffix(JsonElement item)
+    {
+        if (!item.TryGetProperty("okf", out var okf) || okf.ValueKind != JsonValueKind.Object)
+            return "";
+        if (okf.TryGetProperty("valid", out var valid) && valid.ValueKind == JsonValueKind.False)
+            return "  [OKF header unreadable]";
+        var facts = new List<string> { GetString(okf, "type") is { } type ? SanitizeTitle(type) : "no type" };
+        if (GetString(okf, "status") is "draft" or "deprecated") facts.Add(GetString(okf, "status")!);
+        if (GetString(okf, "staleAfter") is { } stale && DateTimeOffset.TryParse(stale, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var at) && at <= DateTimeOffset.UtcNow) facts.Add("out of date");
+        if (GetString(okf, "trust") == "human") facts.Add("verified");
+        var description = GetString(okf, "description") is { Length: > 0 } d ? $" \"{SanitizeTitle(d)}\"" : "";
+        return $"  [{string.Join(", ", facts)}]{description}";
     }
 
     private static string? GetString(JsonElement item, string property) =>

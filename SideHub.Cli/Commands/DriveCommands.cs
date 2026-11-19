@@ -9,7 +9,11 @@ public static class DriveCommands
 {
     public static async Task<int> ListAsync(SideHubApiClient client, string[] args, bool json)
     {
+        var filter = new DriveTree.OkfFilter(GetOption(args, "--type"), GetOption(args, "--tag"), GetOption(args, "--status"), args.Contains("--stale"));
         var result = await client.GetDriveTreeAsync();
+
+        if (filter.Any)
+            return ListConcepts(result, filter, json);
 
         if (json)
         {
@@ -26,6 +30,39 @@ public static class DriveCommands
         Console.WriteLine($"{"ID",-38} {"TYPE",-8} {"TITLE",-40} {"UPDATED"}");
         Console.WriteLine(new string('-', 110));
         PrintTree(items, 0);
+        return 0;
+    }
+
+    /// <summary>`drive list --type|--tag|--status|--stale`: the OKF pages matching, flat, newest first.</summary>
+    private static int ListConcepts(JsonElement tree, DriveTree.OkfFilter filter, bool json)
+    {
+        var items = tree.TryGetProperty("items", out var i) ? i : tree;
+        var now = DateTimeOffset.UtcNow;
+        var pages = DriveTree.Concepts(items, filter, now)
+            .OrderByDescending(p => DriveTree.Str(p, "updatedAt"), StringComparer.Ordinal)
+            .ToList();
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(pages));
+            return 0;
+        }
+        if (pages.Count == 0)
+        {
+            Console.WriteLine("No OKF page matches.");
+            return 0;
+        }
+
+        Console.WriteLine($"{"ID",-38} {"TYPE",-20} {"STATUS",-12} {"TITLE"}");
+        Console.WriteLine(new string('-', 110));
+        foreach (var page in pages)
+        {
+            var okf = page.GetProperty("okf");
+            var status = DriveTree.Str(okf, "status") ?? "stable";
+            if (DriveTree.IsStale(okf, now)) status += ", stale";
+            if (DriveTree.Str(okf, "trust") == "human") status += ", verified";
+            Console.WriteLine($"{DriveTree.Str(page, "id"),-38} {Truncate(DriveTree.Str(okf, "type") ?? "(no type)", 20),-20} {status,-12} {DriveTree.Str(page, "title")}");
+        }
         return 0;
     }
 
@@ -48,10 +85,28 @@ public static class DriveCommands
 
     public static async Task<int> ReadAsync(SideHubApiClient client, string[] args, bool json)
     {
-        var pageId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        var path = GetOption(args, "--path");
+        var pageId = path is null ? args.FirstOrDefault(a => !a.StartsWith("--")) : null;
+        if (path is not null)
+        {
+            // An OKF link (`/payments/refund-flow.md`) read from the workspace root
+            var tree = await client.GetDriveTreeAsync();
+            var found = DriveTree.FindByPath(tree.TryGetProperty("items", out var items) ? items : tree, path);
+            if (found is null)
+            {
+                Console.Error.WriteLine($"No page at {path} (path from the workspace root, made of folder and page titles in lowercase with dashes)");
+                return 1;
+            }
+            if (DriveTree.Str(found.Value, "type") == "folder")
+            {
+                Console.Error.WriteLine($"{path} is a folder ({DriveTree.Str(found.Value, "id")}): `sidehub-cli drive list` shows its pages");
+                return 1;
+            }
+            pageId = DriveTree.Str(found.Value, "id");
+        }
         if (string.IsNullOrEmpty(pageId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive read <pageId>");
+            Console.Error.WriteLine("Usage: sidehub-cli drive read <pageId> | --path </folder/page.md>");
             return 1;
         }
 
