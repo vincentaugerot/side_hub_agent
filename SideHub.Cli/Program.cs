@@ -183,6 +183,8 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  mcp set <name> --file <json>   (values reference workspace secrets as ${NAME}, never a literal secret)");
     Console.Error.WriteLine("  mcp delete <name> [--yes]");
     Console.Error.WriteLine("  okf lint <folder> [--json]   (checks an OKF bundle of the repository, offline)");
+    Console.Error.WriteLine("  okf export [<folderId> | --path </folder/>] [--out <folder|bundle.zip>]   (the whole Mémoire without a folder)");
+    Console.Error.WriteLine("  okf import <folder|bundle.zip> [--into <folderId> | --into-path </folder/>]   (again: updates what changed)");
     return 1;
 }
 
@@ -223,6 +225,8 @@ try
         ("cockpit", "reliability") => await CostCommands.ReliabilityAsync(client, restArgs, jsonOutput),
         ("run", "list") => await RunCommands.ListAsync(client, restArgs, jsonOutput),
         ("run", "get") => await RunCommands.GetAsync(client, restArgs, jsonOutput),
+        ("okf", "export") => await OkfBundleCommands.ExportAsync(client, restArgs, jsonOutput),
+        ("okf", "import") => await OkfBundleCommands.ImportAsync(client, restArgs, jsonOutput),
         ("drive", "list") => await DriveCommands.ListAsync(client, restArgs, jsonOutput),
         ("drive", "read") => await DriveCommands.ReadAsync(client, restArgs, jsonOutput),
         ("drive", "download") => await DriveCommands.DownloadAsync(client, restArgs, jsonOutput),

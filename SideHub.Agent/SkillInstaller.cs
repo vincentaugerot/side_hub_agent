@@ -70,6 +70,11 @@ front matter between `---` lines, then Markdown. Only `type` is required, fill i
 
 In a repository, an OKF bundle is a folder of such `.md` files (`index.md` lists a folder, `log.md` keeps its history,
 both without front matter). Check it with `sidehub-cli okf lint <folder>` before committing.
+- `sidehub-cli okf import <folder|bundle.zip> [--into <folderId> | --into-path /folder/]` puts a bundle into the Drive
+  (one folder per directory, one page per concept, files as files); importing it again updates the pages whose text
+  changed and removes nothing
+- `sidehub-cli okf export [<folderId> | --path /folder/] [--out <folder|bundle.zip>]` writes a Drive folder (the whole
+  Drive without one) as a bundle: each page gets a front matter, images it shows come along, an `index.md` per folder
 """;
 
     private static string BuildSkillContent(string driveIndex)

@@ -141,6 +141,30 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    /// <summary>A folder (or the whole workspace when null) as a zipped OKF bundle.</summary>
+    public async Task<byte[]> ExportOkfBundleAsync(string? folderId)
+    {
+        var url = $"api/workspaces/{_workspaceId}/drive/okf-export";
+        if (!string.IsNullOrEmpty(folderId)) url += $"?folderId={Uri.EscapeDataString(folderId)}";
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadAsByteArrayAsync();
+    }
+
+    /// <summary>Imports a zipped OKF bundle into a folder (the workspace root when null).</summary>
+    public async Task<JsonElement> ImportOkfBundleAsync(byte[] zip, string fileName, string? parentId)
+    {
+        using var content = new MultipartFormDataContent();
+        var file = new ByteArrayContent(zip);
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/zip");
+        content.Add(file, "file", fileName);
+        var url = $"api/workspaces/{_workspaceId}/drive/okf-import";
+        if (!string.IsNullOrEmpty(parentId)) url += $"?parentId={Uri.EscapeDataString(parentId)}";
+        var resp = await _http.PostAsync(url, content);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     public async Task<string> GetDriveJsonAsync(string itemId, CancellationToken ct = default)
     {
         var resp = await _http.GetAsync($"api/drive/{itemId}/json", ct);
@@ -1046,6 +1070,8 @@ public class SideHubApiClient : IDisposable
                 serverMessage = msg.GetString();
             else if (json.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.String)
                 serverMessage = err.GetString();
+            else if (json.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String)
+                serverMessage = detail.GetString();
         }
         catch { /* body is not JSON */ }
 
