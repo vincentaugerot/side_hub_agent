@@ -77,13 +77,14 @@ both without front matter). Check it with `sidehub-cli okf lint <folder>` before
   Drive without one) as a bundle: each page gets a front matter, images it shows come along, an `index.md` per folder
 """;
 
-    /// <summary>End-to-end tests of the workspace (SideHub doc 73): the commands, a test file and how to write one
-    /// (kept out of the interpolated raw string: braces and angle brackets).</summary>
+    /// <summary>End-to-end tests of the workspace (SideHub doc 73): the commands, a test file and how to write one,
+    /// for an agent then for a Playwright script (kept out of the interpolated raw string: braces and angle brackets).</summary>
     private const string TestsSection = """
 ### Tests (end-to-end)
 The workspace keeps end-to-end tests written by the intention: what is given, then steps (when / then) played in one
-browser session by an agent, on a deployed environment. An execution plays a selection of tests and says passed, failed
-(a failure confirmed when played again) or incomplete (a test blocked, inconclusive or unstable: nothing is asserted).
+browser session by an agent, or by a Playwright script, on a deployed environment. An execution plays a selection of
+tests and says passed, failed (a failure confirmed when played again) or incomplete (a test blocked, inconclusive or
+unstable: nothing is asserted).
 - `sidehub-cli test list [--repository <name>] [--feature "..."] [--status draft|active|quarantined|archived]`, `test get <key|id>`: The tests, their steps and the values that tie them. Run `test list` before `test create`: never write a test that already exists
 - `sidehub-cli test create --file <test.yaml>`: Create a test from a file (below). In a terminal the user opened it is active at once (user). In a run or a queued task it is only a proposal: a draft a member validates on the Tests page, in this agent's repository
 - `sidehub-cli test update <key|id> --file <test.yaml>`, `test archive <key|id>`, `test import <scenarios.yaml>` (a catalog: creates, or updates by `id`), `test export [--repository <name>] [--output <file>]`: Change the catalog (user)
@@ -143,6 +144,55 @@ Writing a test:
 - A test that reads a value never changes what it stands for: a test that changes a password creates its own account, or the tests that read the shared one would depend on their order.
 - Say `writes: true` as soon as the test creates or changes data, with data unique per execution (`<execution>` in a text is replaced when it is played) and a `cleanup`. Without a cleanup it is skipped where real data live.
 - An error of `test create` says what to fix (a value no test produces, more than 6 steps, a repository that is not of this workspace): fix the file and send it again.
+
+A scripted test (`mode: script`) names a Playwright file of its repository. SideHub plays it with Playwright, without
+any agent, so without tokens, on an agent whose folder holds that repository:
+```yaml
+id: login-scripted
+title: Log in
+repositories: [side_hub]
+mode: script
+script:
+  file: e2e/login.spec.ts   # from the root of the repository
+  grep: logs in             # file and grep name exactly one Playwright test
+needs:
+  - name: account.email
+    fallback: QA_EMAIL
+steps:
+  - title: Open the login page
+    when: I open /login
+    then:
+      - the login form is shown
+  - title: Log in
+    when: I log in with the address of the account
+    then:
+      - the URL is /cockpit, not the login page
+```
+```ts
+import { test, expect } from '@playwright/test';
+
+test('logs in', async ({ page }) => {
+  await test.step('Open the login page', async () => {
+    await page.goto(process.env.SIDEHUB_TEST_URL + '/login');
+    await expect(page.getByRole('button', { name: 'Log in' })).toBeVisible();
+  });
+  await test.step('Log in', async () => {
+    await page.getByLabel('Email').fill(process.env.SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL!);
+    await page.getByLabel('Password').fill(process.env.QA_PASSWORD!);
+    await page.getByRole('button', { name: 'Log in' }).click();
+    await expect(page).toHaveURL(/\/cockpit$/);
+  });
+});
+```
+
+Writing a scripted test:
+- One `test.step` per step of the test, at the top level of the Playwright test, in the same order. Assert nothing outside a `test.step`: SideHub reads the result of each step in its `test.step`.
+- File and grep name exactly one Playwright test: with several, or none, the test is inconclusive.
+- The address of the application is in `SIDEHUB_TEST_URL`. The secrets of the environment (`QA_PASSWORD`) are environment variables.
+- A value the test uses is read in `SIDEHUB_TEST_VALUE_<NAME>` (`account.email` gives `SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL`). Its fallback is already there when no test of the execution produced it.
+- A value a step produces is written to the JSON file named by `SIDEHUB_TEST_VALUES_FILE`: `{ "account.email": "..." }`.
+- Set `screenshot: 'only-on-failure'` in the Playwright config: a failure then shows its capture. The script cleans up what it created (`afterAll`).
+- `sidehub-cli test play` and `sidehub-cli test results import` are typed by the runs SideHub launches to play scripts: never run them yourself.
 """;
 
     private static string BuildSkillContent(string driveIndex)

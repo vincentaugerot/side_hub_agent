@@ -293,6 +293,54 @@ public class SkillInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task Skill_tells_how_to_write_a_scripted_test()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        foreach (var file in new[] { Path.Combine(".claude", "commands", "sidehub.md"), "AGENTS.md", "GEMINI.md" })
+        {
+            var skill = File.ReadAllText(Path.Combine(_repo, file));
+            Assert.Contains("A scripted test (`mode: script`) names a Playwright file of its repository", skill);
+            Assert.Contains("without tokens, on an agent whose folder holds that repository", skill);
+            Assert.Contains("One `test.step` per step of the test, at the top level of the Playwright test, in the same order", skill);
+            Assert.Contains("Assert nothing outside a `test.step`", skill);
+            Assert.Contains("File and grep name exactly one Playwright test", skill);
+            // What a script reads and writes, under the names sidehub-cli test play gives them
+            Assert.Contains("`SIDEHUB_TEST_URL`", skill);
+            Assert.Contains("`account.email` gives `SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL`", skill);
+            Assert.Contains($"`{SideHub.Cli.Commands.ScriptedTests.ValuesFileVariable}`: `{{ \"account.email\": \"...\" }}`", skill);
+            Assert.Contains("screenshot: 'only-on-failure'", skill);
+            Assert.Contains("(`afterAll`)", skill);
+            Assert.Contains("`sidehub-cli test play` and `sidehub-cli test results import` are typed by the runs SideHub launches to play scripts: never run them yourself", skill);
+            Assert.DoesNotContain("not played yet", skill);
+        }
+    }
+
+    [Fact]
+    public async Task The_scripted_test_of_the_skill_has_one_test_step_per_step()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+        var skill = File.ReadAllText(Path.Combine(_repo, "AGENTS.md"));
+
+        var yaml = System.Text.RegularExpressions.Regex.Match(skill, "```yaml\n(?<yaml>id: login-scripted[\\s\\S]*?)```").Groups["yaml"].Value;
+        var spec = System.Text.RegularExpressions.Regex.Match(skill, "```ts\n(?<ts>[\\s\\S]*?)```").Groups["ts"].Value;
+        var stream = new YamlDotNet.RepresentationModel.YamlStream();
+        stream.Load(new StringReader(yaml));
+        var test = (YamlDotNet.RepresentationModel.YamlMappingNode)stream.Documents.Single().RootNode;
+        var script = (YamlDotNet.RepresentationModel.YamlMappingNode)test.Children["script"];
+        var steps = ((YamlDotNet.RepresentationModel.YamlSequenceNode)test.Children["steps"]).Children
+            .Select(s => ((YamlDotNet.RepresentationModel.YamlMappingNode)s).Children["title"].ToString()).ToList();
+
+        Assert.Equal("script", test.Children["mode"].ToString());
+        Assert.Equal("e2e/login.spec.ts", script.Children["file"].ToString());
+        // The grep names the one Playwright test of the example, whose test.step are the steps, in order
+        Assert.Contains($"test('{script.Children["grep"]}', ", spec);
+        Assert.Equal(steps, System.Text.RegularExpressions.Regex.Matches(spec, @"await test\.step\('([^']+)'").Select(m => m.Groups[1].Value));
+        Assert.Contains("process.env.SIDEHUB_TEST_URL", spec);
+        Assert.Contains("process.env.SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL", spec);
+    }
+
+    [Fact]
     public async Task The_test_files_of_the_skill_are_valid_yaml_and_one_never_both_uses_and_produces_values()
     {
         await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
@@ -301,7 +349,7 @@ public class SkillInstallerTests : IDisposable
         var examples = System.Text.RegularExpressions.Regex.Matches(skill, "```yaml\n(?<yaml>id: [\\s\\S]*?)```")
             .Select(m => m.Groups["yaml"].Value).ToList();
 
-        Assert.Equal(2, examples.Count);
+        Assert.Equal(3, examples.Count);
         foreach (var example in examples)
         {
             var stream = new YamlDotNet.RepresentationModel.YamlStream();
