@@ -4,7 +4,7 @@ namespace SideHub.Agent.Models;
 
 /// <summary>
 /// What one round of a delegated work changed in the repository (work review, see
-/// <c>side_hub/doc/features/56-revue-du-travail.md</c>): sent when the round ends. File contents never leave the
+/// side_hub doc 56): sent when the round ends. File contents never leave the
 /// machine here, only paths, line counts and commit subjects; the diff is asked for separately
 /// (<c>review.diff.request</c>).
 /// </summary>

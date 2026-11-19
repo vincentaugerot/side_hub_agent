@@ -5,7 +5,7 @@ namespace SideHub.Agent.Outgoing;
 
 /// <summary>
 /// The commits of the current branch that are not pushed yet, and the push itself (see
-/// <c>side_hub/doc/features/58-pousser-le-travail.md</c>). Reading only runs local git commands, never a fetch:
+/// side_hub doc 58). Reading only runs local git commands, never a fetch:
 /// "behind" is as of the machine's last fetch. A push is never forced and only sends the commit a person confirmed.
 /// </summary>
 public static partial class OutgoingCommitsReader

@@ -4,7 +4,7 @@ namespace SideHub.Agent.Models;
 
 /// <summary>
 /// The commits of the agent's branch that are not pushed yet (see
-/// <c>side_hub/doc/features/58-pousser-le-travail.md</c>): sent at connection, when it changes, after a task is done
+/// side_hub doc 58): sent at connection, when it changes, after a task is done
 /// and after a push. Only local git state, never fetched.
 /// </summary>
 public sealed record GitOutgoingMessage
