@@ -20,7 +20,7 @@ public class NodePtyExecutor : IAsyncDisposable
     private int _columns;
     private int _rows;
     private readonly PtyOutputBuffer _outputBuffer = new();
-    private SecretMasker? _secretMasker;
+    private volatile SecretMasker? _secretMasker;
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingPings = new();
 
@@ -40,6 +40,18 @@ public class NodePtyExecutor : IAsyncDisposable
                 return _nodeProcess != null && !_hasExited && !_nodeProcess.HasExited;
             }
         }
+    }
+
+    /// <summary>
+    /// Masks <paramref name="value"/> in the terminal's output from now on: a secret that did not exist when the PTY
+    /// started (a test's value). What was printed before stays as it was. Returns whether the masker took it.
+    /// </summary>
+    public bool AddSecret(string value)
+    {
+        var masker = _secretMasker;
+        if (masker is null)
+            _secretMasker = masker = SecretMasker.Empty();
+        return masker.Add(value);
     }
 
     /// <summary>What runs in the foreground of the terminal, as the helper last said; null until it says (Windows).</summary>

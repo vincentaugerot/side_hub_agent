@@ -77,6 +77,74 @@ both without front matter). Check it with `sidehub-cli okf lint <folder>` before
   Drive without one) as a bundle: each page gets a front matter, images it shows come along, an `index.md` per folder
 """;
 
+    /// <summary>End-to-end tests of the workspace (SideHub doc 73): the commands, a test file and how to write one
+    /// (kept out of the interpolated raw string: braces and angle brackets).</summary>
+    private const string TestsSection = """
+### Tests (end-to-end)
+The workspace keeps end-to-end tests written by the intention: what is given, then steps (when / then) played in one
+browser session by an agent, on a deployed environment. An execution plays a selection of tests and says passed, failed
+(a failure confirmed when played again) or incomplete (a test blocked, inconclusive or unstable: nothing is asserted).
+- `sidehub-cli test list [--repository <name>] [--feature "..."] [--status draft|active|quarantined|archived]`, `test get <key|id>`: The tests, their steps and the values that tie them. Run `test list` before `test create`: never write a test that already exists
+- `sidehub-cli test create --file <test.yaml>`: Create a test from a file (below). In a terminal the user opened it is active at once (user). In a run or a queued task it is only a proposal: a draft a member validates on the Tests page, in this agent's repository
+- `sidehub-cli test update <key|id> --file <test.yaml>`, `test archive <key|id>`, `test import <scenarios.yaml>` (a catalog: creates, or updates by `id`), `test export [--repository <name>] [--output <file>]`: Change the catalog (user)
+- `sidehub-cli test run [--environment <name>] [--critical | --repository <name> | --test <key>...] [--cli claude|codex|agy|copilot]`: Launch an execution (user); without a selection, every active test. `sidehub-cli test status [<number>]`: its verdict and the result of each test, step by step
+- `sidehub-cli test result ...`, `sidehub-cli test value set|get ...`: Only inside a run SideHub launched to play tests; its prompt says how
+
+A test file (`sidehub.qa/v1`, one test; a catalog lists several under `scenarios:`):
+```yaml
+id: signup-then-login
+title: Create an account and log in
+feature: Account
+priority: critical          # critical or normal
+repositories: [side_hub]    # the first one is the test's own, the next ones those it also covers
+writes: true                # it creates or changes data: then data unique per execution, and a cleanup
+given:
+  - no session open (new browser)
+steps:
+  - title: Create the account
+    when: I sign up with qa+<execution>@test.example.com and a new password
+    then:
+      - the confirmation page shows the address
+      - no error in the console and no HTTP 5xx response
+    produces:               # values this step sets for other tests
+      - account.email
+      - name: account.password
+        secret: true
+  - title: Log in with it
+    when: I log in with that address and password
+    then:
+      - the URL is /cockpit, not the login page
+data: qa+<execution>@test.example.com
+cleanup: delete the account
+```
+A test that starts from that account declares the values it uses instead of creating one, each with the secret of
+the environment it falls back on when it is played alone:
+```yaml
+id: open-settings
+title: Open the settings of the account
+repositories: [side_hub]
+needs:
+  - name: account.email
+    fallback: QA_EMAIL
+  - name: account.password
+    fallback: QA_PASSWORD
+steps:
+  - when: I log in and open the settings
+    then:
+      - the settings page shows the address of the account
+```
+
+Writing a test:
+- One intention per test, 6 steps at most. A test of one step is fine; beyond 6 it is two tests.
+- Write the intention, never a sequence of clicks: the agent that plays it finds its way through the interface.
+- Each "then" is an observable fact (a text displayed, a URL, an HTTP status), checked one by one with what was observed. "It works" is not a "then".
+- A test stands alone by default. When several tests start from the same point (an account), one test creates it and declares on its step what it `produces`; the others declare they need it (`needs`) instead of creating it again. A test that produces values uses none, and one test only produces a given value.
+- Always give a `fallback` to a value a test needs: played alone, the test takes that secret of the environment.
+- A test that reads a value never changes what it stands for: a test that changes a password creates its own account, or the tests that read the shared one would depend on their order.
+- Say `writes: true` as soon as the test creates or changes data, with data unique per execution (`<execution>` in a text is replaced when it is played) and a `cleanup`. Without a cleanup it is skipped where real data live.
+- An error of `test create` says what to fix (a value no test produces, more than 6 steps, a repository that is not of this workspace): fix the file and send it again.
+""";
+
     private static string BuildSkillContent(string driveIndex)
     {
         return $"""
@@ -148,6 +216,7 @@ automation id is a workflow id and a schedule id a scheduler id: the `workflow` 
 - `sidehub-cli workflow update <wfId> --work-review off`: Its runs no longer go "To review" (user). For an automation that only writes to the Drive or a report: otherwise what another session changes in the agent's folder during the run lands in its review. `on` turns it back on
 - `sidehub-cli workflow triggers <wfId>`, `workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--folder <id> | --to-status <s> | --source-workflow <id>] [--map param=path]*`, `workflow trigger-update <wfId> <triggerId> [--active true|false] ...`, `workflow trigger-delete <wfId> <triggerId>`: Launch an automation on a workspace event (user, Owner or Admin)
 
+{TestsSection}
 ### Runs and what needs attention
 - `sidehub-cli cockpit now`: What waits for someone (approvals, works to review, failed runs, blocked tasks), the next scheduled runs, the agents and the latest runs, with the ids to pass to the commands below
 - `sidehub-cli run list [--status failed] [--runtime <cli>] [--agent <id>] [--since 24h|7d|<date>] [--limit N]`: Runs SideHub launched on agents (automation steps, task queues...), newest first

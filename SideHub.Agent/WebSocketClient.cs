@@ -626,6 +626,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     await ReportCliStateAsync(ptySessionId, changed, ct);
                     return;
 
+                // Written by `sidehub-cli test value set --secret|get`: a secret a test just set or read (a password it
+                // chose). Masked in what the terminal prints from now on, in its last lines and in its CLI's messages.
+                case FifoNotification.SecretValue added:
+                    MaskInPty(ptySessionId, added.Value);
+                    return;
+
                 // Written by Claude's StopFailure hook through `sidehub-cli cli-state claude limit`: its plan ran out.
                 case FifoNotification.CliLimitReached limit:
                     if (_ptySessions.ContainsKey(ptySessionId))
@@ -638,6 +644,33 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         {
             Log($"FIFO line handling failed on PTY {ptySessionId}: {ex.Message}");
         }
+    }
+
+    /// <summary>Prefix of the entries <see cref="MaskInPty"/> adds to a PTY's secrets: never a variable of its shell.</summary>
+    private const string AddedSecretPrefix = "SIDEHUB_MASKED_VALUE_";
+
+    /// <summary>
+    /// A secret that appeared while the PTY runs joins the ones it started with: the output reader masks it from now on,
+    /// and so does everything else read from the PTY later (last lines, CLI messages, conversation), which builds its
+    /// masker from <see cref="_ptySecrets"/>. The value is never logged.
+    /// </summary>
+    private void MaskInPty(string ptySessionId, string value)
+    {
+        if (!_ptySessions.TryGetValue(ptySessionId, out var session) || !session.Executor.AddSecret(value))
+            return;
+        _ptySecrets.AddOrUpdate(
+            ptySessionId,
+            _ => (new Dictionary<string, string> { [AddedSecretPrefix + "1"] = value }, [AddedSecretPrefix + "1"]),
+            (_, current) =>
+            {
+                var env = current.Env is null ? new Dictionary<string, string>() : new Dictionary<string, string>(current.Env);
+                var keys = current.Keys is null ? new List<string>() : [.. current.Keys];
+                var key = AddedSecretPrefix + (keys.Count(k => k.StartsWith(AddedSecretPrefix, StringComparison.Ordinal)) + 1);
+                env[key] = value;
+                keys.Add(key);
+                return (env, keys);
+            });
+        Log($"Secret value masked in PTY {ptySessionId} from now on ({value.Length} chars)");
     }
 
     private async Task ReportCliStateAsync(string ptySessionId, FifoNotification.CliStateChanged changed, CancellationToken ct)

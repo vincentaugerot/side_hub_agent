@@ -54,6 +54,13 @@ public abstract record FifoNotification
     /// Claude said, null when it said nothing.</summary>
     public sealed record CliLimitReached(string Provider, string? CliSessionId, string Error, string? Message) : FifoNotification;
 
+    /// <summary><c>sidehub-cli test value set --secret|get</c>: a secret a test just set or read, to mask in the terminal's
+    /// output from now on (<see cref="SecretMasker"/>). Never logged.</summary>
+    public sealed record SecretValue(string Value) : FifoNotification;
+
+    /// <summary>Longest secret value accepted, in characters (what SideHub keeps of a value of a test execution).</summary>
+    public const int MaxSecretValueLength = 2000;
+
     /// <summary>Longest limit message accepted, in characters (what <c>sidehub-cli</c> sends at most).</summary>
     public const int MaxLimitMessageLength = 1000;
 
@@ -208,6 +215,17 @@ public abstract record FifoNotification
                         return null;
                     }
                     return new CliLimitReached(provider!, cliSessionId, error, message);
+                }
+
+                case "secret-value":
+                {
+                    var value = Text(root, "value", MaxSecretValueLength, required: true, out var valueOk);
+                    if (!valueOk)
+                    {
+                        rejection = "invalid value";
+                        return null;
+                    }
+                    return new SecretValue(value!);
                 }
 
                 default:

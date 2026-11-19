@@ -62,7 +62,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
     Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|agy|copilot|gemini> [args...]");
     Console.Error.WriteLine("       sidehub-cli whoami [--json]");
-    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, automation, scheduler, workflow, review, approval, queue, outgoing, secret, mcp, okf");
+    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, automation, scheduler, workflow, test, review, approval, queue, outgoing, secret, mcp, okf");
     Console.Error.WriteLine("  cockpit now");
     Console.Error.WriteLine("  cockpit usage [--since <30d|date>] [--until <date>] [--by day|workspace|repository|agent|model|user|origin] [--split origin|workspace|provider] [--tz <IANA zone>]");
     Console.Error.WriteLine("  cockpit reliability [--since <7d|date>] [--until <date>]");
@@ -157,6 +157,17 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--agent <id>] [--provider <p>] [--folder <id> [--subfolders] | --to-status completed|in-progress | --source-workflow <id> | --filter-file <json>] [--map param=path]*");
     Console.Error.WriteLine("  workflow trigger-update <wfId> <triggerId> [--active true|false] [--agent <id>] [--provider <p>] [--folder <id> [--subfolders] | --to-status <s> | --source-workflow <id> | --filter-file <json>] [--map param=path]* [--clear-map]");
     Console.Error.WriteLine("  workflow trigger-delete <wfId> <triggerId> [--yes]");
+    Console.Error.WriteLine("  test list [--repository <name|id>] [--feature \"...\"] [--status draft|active|quarantined|archived]");
+    Console.Error.WriteLine("  test get <key|id>");
+    Console.Error.WriteLine("  test create --file <test.yaml>   (a draft to validate when run from a run or a queued task)");
+    Console.Error.WriteLine("  test update <key|id> --file <test.yaml>");
+    Console.Error.WriteLine("  test archive <key|id> [--yes]");
+    Console.Error.WriteLine("  test import <scenarios.yaml>");
+    Console.Error.WriteLine("  test export [--repository <name|id>] [--output <file>]");
+    Console.Error.WriteLine("  test run [--environment <name>] [--critical | --repository <name|id> | --test <key>...] [--fallbacks] [--cli claude|codex|agy|copilot] [--model <model>] [--agent <id>]");
+    Console.Error.WriteLine("  test status [<number|executionId>]");
+    Console.Error.WriteLine("  test result <test id> --step <n> --status passed|failed|inconclusive [--then \"<n>=verified|failed|no-evidence: ...\"]* [--observed \"...\"] [--console \"...\"]* [--http \"...\"]*   (inside a run of a test execution)");
+    Console.Error.WriteLine("  test value set <name> \"<value>\" [--secret] | get <name>   (inside a run of a test execution)");
     Console.Error.WriteLine("  review list [--status pending|validated|fix-requested|dismissed] [--task <id>] [--run <id>] [--limit N]");
     Console.Error.WriteLine("  review get <reviewId>");
     Console.Error.WriteLine("  review diff <reviewId> [--round N] [--path <file>]");
@@ -205,9 +216,11 @@ var writeActions = new HashSet<string>
     "import", "duplicate", "cancel", "retry", "step-override", "validate-step",
     "decide", "peer", "approve", "reject", "request-changes", "tool",
     "add", "remove", "skip", "push",
-    "ask", "set", "trigger-add", "trigger-update", "trigger-delete"
+    "ask", "set", "trigger-add", "trigger-update", "trigger-delete",
+    "archive", "result", "results"
 };
-if (pipelineMode == "plan" && writeActions.Contains(action))
+// `test status` reads an execution, unlike `task status` which changes a task.
+if (pipelineMode == "plan" && writeActions.Contains(action) && (domain, action) is not ("test", "status"))
 {
     Console.Error.WriteLine($"Error: write command '{action}' is not allowed in plan mode");
     return 1;
@@ -314,6 +327,18 @@ try
         ("workflow", "trigger-add") => await WorkflowTriggerCommands.AddAsync(client, restArgs, jsonOutput),
         ("workflow", "trigger-update") => await WorkflowTriggerCommands.UpdateAsync(client, restArgs, jsonOutput),
         ("workflow", "trigger-delete") => await WorkflowTriggerCommands.DeleteAsync(client, restArgs, jsonOutput),
+        ("test", "list") => await TestCommands.ListAsync(client, restArgs, jsonOutput),
+        ("test", "get") => await TestCommands.GetAsync(client, restArgs, jsonOutput),
+        ("test", "create") => await TestCommands.CreateAsync(client, restArgs, jsonOutput),
+        ("test", "update") => await TestCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("test", "archive") => await TestCommands.ArchiveAsync(client, restArgs, jsonOutput),
+        ("test", "import") => await TestCommands.ImportAsync(client, restArgs, jsonOutput),
+        ("test", "export") => await TestCommands.ExportAsync(client, restArgs, jsonOutput),
+        ("test", "run") => await TestCommands.RunAsync(client, restArgs, jsonOutput),
+        ("test", "status") => await TestCommands.StatusAsync(client, restArgs, jsonOutput),
+        ("test", "result") => await TestCommands.ResultAsync(client, restArgs, jsonOutput),
+        ("test", "value") => await TestCommands.ValueAsync(client, restArgs, jsonOutput),
+        ("test", "results") => await TestCommands.ResultsAsync(client, restArgs, jsonOutput),
         ("review", "list") => await ReviewCommands.ListAsync(client, restArgs, jsonOutput),
         ("review", "get") => await ReviewCommands.GetAsync(client, restArgs, jsonOutput),
         ("review", "diff") => await ReviewCommands.DiffAsync(client, restArgs, jsonOutput),

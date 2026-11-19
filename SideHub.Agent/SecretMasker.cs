@@ -10,7 +10,8 @@ namespace SideHub.Agent;
 /// that could be the start of a secret is held back until the next chunk tells whether it is one,
 /// or <see cref="Flush"/> releases it. Best effort, like CI log masking: a value printed transformed
 /// (encoded, reversed, interleaved with escape codes) is not recognized.
-/// Not thread-safe: one masker per PTY, fed by its single output reader.
+/// One masker per PTY, fed by its single output reader; <see cref="Add"/> alone may come from another thread (a secret
+/// a test sets or reads while the terminal runs, see <c>sidehub-cli test value</c>).
 /// </summary>
 public sealed class SecretMasker
 {
@@ -19,15 +20,48 @@ public sealed class SecretMasker
     /// <summary>Shorter values are not masked: hiding every "1" or "on" would mangle the whole terminal.</summary>
     public const int MinSecretLength = 4;
 
-    /// <summary>Longest first, so a secret that starts with another one is masked whole.</summary>
-    private readonly string[] _secrets;
-    private readonly HashSet<char> _firstChars;
+    /// <summary>The most secrets added to one terminal while it runs: enough for the values of a test run.</summary>
+    public const int MaxAddedSecrets = 50;
+
+    /// <summary>What is masked, replaced as a whole when a secret is added: the reader always sees one consistent set.</summary>
+    /// <param name="Secrets">Longest first, so a secret that starts with another one is masked whole.</param>
+    private sealed record Mask(string[] Secrets, HashSet<char> FirstChars)
+    {
+        public static Mask Of(IEnumerable<string> secrets)
+        {
+            var list = secrets
+                .Where(s => s.Length >= MinSecretLength)
+                .Distinct(StringComparer.Ordinal)
+                .OrderByDescending(s => s.Length)
+                .ToArray();
+            return new Mask(list, list.Select(s => s[0]).ToHashSet());
+        }
+    }
+
+    private volatile Mask _mask;
+    private int _added;
     private string _pending = string.Empty;
 
-    private SecretMasker(string[] secrets)
+    private SecretMasker(IEnumerable<string> secrets) => _mask = Mask.Of(secrets);
+
+    /// <summary>A masker that masks nothing yet, for a terminal that started without secrets and gets one later.</summary>
+    public static SecretMasker Empty() => new([]);
+
+    /// <summary>
+    /// Masks <paramref name="value"/> from now on (and each of its lines). Returns false when it is too short to mask,
+    /// already masked, or when <see cref="MaxAddedSecrets"/> were added.
+    /// </summary>
+    public bool Add(string? value)
     {
-        _secrets = secrets;
-        _firstChars = secrets.Select(s => s[0]).ToHashSet();
+        if (string.IsNullOrEmpty(value) || value.Length < MinSecretLength)
+            return false;
+        var current = _mask;
+        if (current.Secrets.Contains(value, StringComparer.Ordinal) || _added >= MaxAddedSecrets)
+            return false;
+        _added++;
+        var lines = value.Contains('\n') ? value.Split('\n').Select(l => l.TrimEnd('\r')) : [];
+        _mask = Mask.Of(current.Secrets.Append(value).Concat(lines));
+        return true;
     }
 
     /// <summary>
@@ -49,11 +83,7 @@ public sealed class SecretMasker
                     secrets.Add(line.TrimEnd('\r'));
         }
 
-        var masked = secrets
-            .Where(s => s.Length >= MinSecretLength)
-            .OrderByDescending(s => s.Length)
-            .ToArray();
-        return masked.Length == 0 ? null : new SecretMasker(masked);
+        return secrets.Any(s => s.Length >= MinSecretLength) ? new SecretMasker(secrets) : null;
     }
 
     /// <summary>True while the end of the last chunk is held back, waiting for the next one.</summary>
@@ -71,19 +101,20 @@ public sealed class SecretMasker
     private string Scan(string text, bool holdPartial)
     {
         _pending = string.Empty;
+        var mask = _mask;
         var output = new StringBuilder(text.Length);
         var i = 0;
         while (i < text.Length)
         {
-            if (_firstChars.Contains(text[i]))
+            if (mask.FirstChars.Contains(text[i]))
             {
-                if (MatchAt(text, i) is { } length)
+                if (MatchAt(mask, text, i) is { } length)
                 {
                     output.Append(Replacement);
                     i += length;
                     continue;
                 }
-                if (holdPartial && IsSecretPrefix(text, i))
+                if (holdPartial && IsSecretPrefix(mask, text, i))
                 {
                     _pending = text[i..];
                     break;
@@ -95,9 +126,9 @@ public sealed class SecretMasker
         return output.ToString();
     }
 
-    private int? MatchAt(string text, int index)
+    private static int? MatchAt(Mask mask, string text, int index)
     {
-        foreach (var secret in _secrets)
+        foreach (var secret in mask.Secrets)
             if (secret.Length <= text.Length - index
                 && string.CompareOrdinal(text, index, secret, 0, secret.Length) == 0)
                 return secret.Length;
@@ -105,10 +136,10 @@ public sealed class SecretMasker
     }
 
     /// <summary>The rest of <paramref name="text"/> from <paramref name="index"/> is the start of a secret.</summary>
-    private bool IsSecretPrefix(string text, int index)
+    private static bool IsSecretPrefix(Mask mask, string text, int index)
     {
         var remaining = text.Length - index;
-        foreach (var secret in _secrets)
+        foreach (var secret in mask.Secrets)
             if (secret.Length > remaining
                 && string.CompareOrdinal(text, index, secret, 0, remaining) == 0)
                 return true;

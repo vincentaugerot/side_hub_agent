@@ -149,4 +149,44 @@ public class SecretMaskerTests
         Assert.Equal("echo $API_KEY\r\n***\r\n$ ", buffer.GetAll());
         Assert.DoesNotContain("abcd1234", buffer.GetAll());
     }
+
+    [Fact]
+    public void A_secret_added_while_the_terminal_runs_is_masked_from_then_on()
+    {
+        var masker = Masker(new() { ["API_KEY"] = "abcd1234" }, "API_KEY");
+        var before = masker.Process("password s3cret-pw typed\r\n");
+
+        Assert.True(masker.Add("s3cret-pw"));
+        var after = Stream(masker, "login with s3cret-pw and abcd1234, then s3cr", "et-pw again\r\n");
+
+        // What was printed before stays as it was: the mask starts when the value is told.
+        Assert.Equal("password s3cret-pw typed\r\n", before);
+        Assert.Equal("login with *** and ***, then *** again\r\n", after);
+    }
+
+    [Fact]
+    public void A_terminal_without_secrets_can_get_one_later()
+    {
+        var masker = SecretMasker.Empty();
+
+        Assert.Equal("nothing to hide\r\n", Stream(masker, "nothing to hide\r\n"));
+        Assert.True(masker.Add("line one\nline two"));
+
+        Assert.Equal("*** / ***\r\n", Stream(masker, "line one / line two\r\n"));
+    }
+
+    [Fact]
+    public void A_value_too_short_or_already_masked_is_not_added_and_the_additions_are_bounded()
+    {
+        var masker = SecretMasker.Empty();
+
+        Assert.False(masker.Add("abc"));
+        Assert.False(masker.Add(null));
+        Assert.True(masker.Add("abcd1234"));
+        Assert.False(masker.Add("abcd1234"));
+        for (var i = 1; i < SecretMasker.MaxAddedSecrets; i++)
+            Assert.True(masker.Add($"secret-number-{i}"));
+        Assert.False(masker.Add("one-too-many"));
+        Assert.Equal("one-too-many ***", Stream(masker, "one-too-many secret-number-7"));
+    }
 }

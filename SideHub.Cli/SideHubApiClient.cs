@@ -1052,6 +1052,89 @@ public class SideHubApiClient : IDisposable
         return string.IsNullOrWhiteSpace(content) ? default : JsonSerializer.Deserialize<JsonElement>(content);
     }
 
+    // --- Tests (SideHub doc 73) ---
+
+    public async Task<JsonElement> ListTestsAsync(string? repositoryId, string? feature, string? status)
+    {
+        var query = new List<string>();
+        if (repositoryId is not null) query.Add($"repositoryId={Uri.EscapeDataString(repositoryId)}");
+        if (feature is not null) query.Add($"feature={Uri.EscapeDataString(feature)}");
+        if (status is not null) query.Add($"status={Uri.EscapeDataString(status)}");
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/tests{(query.Count > 0 ? "?" + string.Join("&", query) : "")}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetTestAsync(string testId)
+    {
+        var resp = await _http.GetAsync($"api/tests/{Uri.EscapeDataString(testId)}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>Creates a test from its file. <paramref name="proposal"/>: from a run or a queued task, as a draft.</summary>
+    public Task<JsonElement> CreateTestAsync(string yaml, bool proposal) =>
+        PostAsync($"api/workspaces/{_workspaceId}/tests{(proposal ? "/proposals" : "")}", new { yaml });
+
+    public async Task<JsonElement> UpdateTestAsync(string testId, string yaml)
+    {
+        var resp = await _http.PutAsJsonAsync($"api/tests/{Uri.EscapeDataString(testId)}", new { yaml });
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <param name="action">validate, archive, quarantine or lift-quarantine.</param>
+    public Task<JsonElement> ChangeTestStatusAsync(string testId, string action) =>
+        PostAsync($"api/tests/{Uri.EscapeDataString(testId)}/{action}", null);
+
+    public Task<JsonElement> ImportTestsAsync(string yaml) =>
+        PostAsync($"api/workspaces/{_workspaceId}/tests/import", new { yaml });
+
+    public async Task<JsonElement> ExportTestsAsync(string? repositoryId)
+    {
+        var resp = await _http.GetAsync(
+            $"api/workspaces/{_workspaceId}/tests/export{(repositoryId is null ? "" : "?repositoryId=" + Uri.EscapeDataString(repositoryId))}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>Launches the tests; a launch that cannot start answers 409 with its reason, thrown like any API error.</summary>
+    public Task<JsonElement> LaunchTestsAsync(object body) =>
+        PostAsync($"api/workspaces/{_workspaceId}/test-executions", body);
+
+    public async Task<JsonElement> ListTestExecutionsAsync(int take)
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/test-executions?take={take}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetTestExecutionAsync(string executionId)
+    {
+        var resp = await _http.GetAsync($"api/test-executions/{Uri.EscapeDataString(executionId)}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>The result of one step, from the run that plays the test (its token only).</summary>
+    public Task<JsonElement> ReportTestResultAsync(string executionId, object body) =>
+        PostAsync($"api/test-executions/{Uri.EscapeDataString(executionId)}/results", body);
+
+    public async Task<JsonElement> SetTestValueAsync(string executionId, string name, string value, bool secret)
+    {
+        var resp = await _http.PutAsJsonAsync(
+            $"api/test-executions/{Uri.EscapeDataString(executionId)}/values/{Uri.EscapeDataString(name)}", new { value, secret });
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetTestValueAsync(string executionId, string name)
+    {
+        var resp = await _http.GetAsync($"api/test-executions/{Uri.EscapeDataString(executionId)}/values/{Uri.EscapeDataString(name)}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     public void Dispose() => _http.Dispose();
 
     public static string Serialize(JsonElement element) =>

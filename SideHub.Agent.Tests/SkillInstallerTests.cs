@@ -268,6 +268,51 @@ public class SkillInstallerTests : IDisposable
         Assert.DoesNotContain("\u2014", skill);
     }
 
+    [Fact]
+    public async Task Skill_tells_how_to_write_and_launch_end_to_end_tests()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        foreach (var file in new[] { Path.Combine(".claude", "commands", "sidehub.md"), "AGENTS.md", "GEMINI.md" })
+        {
+            var skill = File.ReadAllText(Path.Combine(_repo, file));
+            Assert.Contains("### Tests (end-to-end)", skill);
+            Assert.Contains("sidehub-cli test create --file <test.yaml>", skill);
+            Assert.Contains("Run `test list` before `test create`", skill);
+            Assert.Contains("In a run or a queued task it is only a proposal", skill);
+            Assert.Contains("sidehub-cli test run [--environment <name>]", skill);
+            // The rules of writing, and a file the backend accepts as it is
+            Assert.Contains("One intention per test, 6 steps at most", skill);
+            Assert.Contains("A test that reads a value never changes what it stands for", skill);
+            Assert.Contains("Always give a `fallback`", skill);
+            Assert.Contains("qa+<execution>@test.example.com", skill);
+            Assert.Contains("        secret: true", skill);
+            Assert.Contains("    fallback: QA_PASSWORD", skill);
+            Assert.DoesNotContain("\u2014", skill);
+        }
+    }
+
+    [Fact]
+    public async Task The_test_files_of_the_skill_are_valid_yaml_and_one_never_both_uses_and_produces_values()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+        var skill = File.ReadAllText(Path.Combine(_repo, "AGENTS.md"));
+
+        var examples = System.Text.RegularExpressions.Regex.Matches(skill, "```yaml\n(?<yaml>id: [\\s\\S]*?)```")
+            .Select(m => m.Groups["yaml"].Value).ToList();
+
+        Assert.Equal(2, examples.Count);
+        foreach (var example in examples)
+        {
+            var stream = new YamlDotNet.RepresentationModel.YamlStream();
+            stream.Load(new StringReader(example));
+            var test = Assert.IsType<YamlDotNet.RepresentationModel.YamlMappingNode>(stream.Documents.Single().RootNode);
+            Assert.Contains(test.Children.Keys, k => k.ToString() == "steps");
+            // The backend refuses a test that does both: the tests that set values are played first, in one pass.
+            Assert.False(example.Contains("needs:") && example.Contains("produces:"));
+        }
+    }
+
     private string Git(params string[] args)
     {
         var psi = new ProcessStartInfo("git") { WorkingDirectory = _repo, RedirectStandardOutput = true, RedirectStandardError = true };
