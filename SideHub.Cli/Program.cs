@@ -1,6 +1,7 @@
 using SideHub.Cli;
 using SideHub.Cli.Commands;
 using SideHub.Cli.Launch;
+using SideHub.Cli.Okf;
 
 // Starting a coding CLI talks to the agent only, never to the API: no SideHub session is needed.
 if (args.Length > 0 && args[0] == "launch")
@@ -14,6 +15,10 @@ if (args.Length == 2 && args[0] == PolicyCheckCommand.Domain && args[1] == Polic
 // Run by claude's PreToolUse hook on MCP tools when a permissionless run may use the machine's: always allows, exits 0.
 if (args.Length == 2 && args[0] == PolicyCheckCommand.Domain && args[1] == PolicyAllowCommand.Action)
     return PolicyAllowCommand.Run();
+
+// Checking an OKF bundle of the repository reads local files only: no SideHub session is needed.
+if (args.Length > 1 && args[0] == OkfLint.Domain && args[1] == OkfLint.Action)
+    return OkfLint.Run(args[2..]);
 
 var apiUrl = Environment.GetEnvironmentVariable("SIDEHUB_API_URL");
 var agentToken = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_TOKEN");
@@ -57,7 +62,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
     Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|agy|copilot|gemini> [args...]");
     Console.Error.WriteLine("       sidehub-cli whoami [--json]");
-    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, automation, scheduler, workflow, review, approval, queue, outgoing, secret, mcp");
+    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, automation, scheduler, workflow, review, approval, queue, outgoing, secret, mcp, okf");
     Console.Error.WriteLine("  cockpit now");
     Console.Error.WriteLine("  cockpit usage [--since <30d|date>] [--until <date>] [--by day|workspace|repository|agent|model|user|origin] [--split origin|workspace|provider] [--tz <IANA zone>]");
     Console.Error.WriteLine("  cockpit reliability [--since <7d|date>] [--until <date>]");
@@ -177,6 +182,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  mcp set <name> --url <url> [--header KEY=VALUE]* [--description \"...\"]");
     Console.Error.WriteLine("  mcp set <name> --file <json>   (values reference workspace secrets as ${NAME}, never a literal secret)");
     Console.Error.WriteLine("  mcp delete <name> [--yes]");
+    Console.Error.WriteLine("  okf lint <folder> [--json]   (checks an OKF bundle of the repository, offline)");
     return 1;
 }
 

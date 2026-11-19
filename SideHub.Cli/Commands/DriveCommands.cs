@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using SideHub.Cli.Okf;
 
 namespace SideHub.Cli.Commands;
 
@@ -512,6 +513,8 @@ public static class DriveCommands
             return 1;
         }
 
+        if (content is not null && (type is null || type == "page")) WarnOkf(content);
+
         var result = await client.CreateDriveItemAsync(title, content, parentId, type);
 
         if (json)
@@ -559,6 +562,8 @@ public static class DriveCommands
             Console.Error.WriteLine("Error: content exceeds 100KB limit");
             return 1;
         }
+
+        if (content is not null) WarnOkf(content);
 
         var result = await client.UpdateDriveItemAsync(pageId, title, content);
 
@@ -930,6 +935,17 @@ public static class DriveCommands
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// A page that opens on a YAML front matter is meant as an OKF concept: says on stderr what keeps it from reading
+    /// as one (no `type`, invalid YAML, a field written differently from the spec). The page is written anyway.
+    /// </summary>
+    internal static void WarnOkf(string content)
+    {
+        if (OkfConcept.Check(content) is not { } check) return;
+        foreach (var problem in check.Errors.Concat(check.Warnings))
+            Console.Error.WriteLine($"Warning (OKF): {problem}");
     }
 
     private static string? TryReadFile(string path)

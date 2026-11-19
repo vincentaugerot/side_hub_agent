@@ -103,6 +103,18 @@ public class SkillInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task Skill_tells_how_to_write_a_page_as_an_okf_concept()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        var skill = File.ReadAllText(Path.Combine(_repo, "AGENTS.md"));
+        Assert.Contains("#### Pages as OKF concepts", skill);
+        Assert.Contains("generated: { by: claude/opus-5-5, at: 2026-11-19T10:00:00Z }", skill);
+        Assert.Contains("sidehub-cli okf lint <folder>", skill);
+        Assert.DoesNotContain("\u2014", skill);
+    }
+
+    [Fact]
     public async Task Generated_skill_files_are_excluded_from_git()
     {
         Git("init", "-q");

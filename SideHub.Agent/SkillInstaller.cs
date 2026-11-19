@@ -29,6 +29,48 @@ public static class SkillInstaller
     /// <summary>How a later step reads a value returned with <c>step-complete --value score=...</c> (kept out of the raw string: braces).</summary>
     private const string StepOutputPlaceholder = "{{steps.<step>.outputs.score}}";
 
+    /// <summary>How to write a page as an OKF concept (kept out of the interpolated raw string: braces).</summary>
+    private const string OkfSection = """
+#### Pages as OKF concepts (Open Knowledge Format)
+
+Write a page meant to be reused (a decision, a playbook, a reference, how a module works) as an OKF concept: a YAML
+front matter between `---` lines, then Markdown. Only `type` is required, fill in what you know:
+
+    ---
+    type: Decision
+    title: Retry policy of the payment webhook
+    description: One sentence that says what the page holds.
+    tags: [payments, webhooks]
+    status: draft
+    generated: { by: claude/opus-5-5, at: 2026-11-19T10:00:00Z }
+    sources:
+      - id: webhook-handler
+        resource: src/Payments/WebhookHandler.cs
+        title: Webhook handler
+    ---
+
+    # Decision
+
+    Retries stop after 5 attempts.[^webhook-handler] See the [refund flow](/payments/refund-flow.md).
+
+    [^webhook-handler]: Webhook handler
+
+- `type` is free text: Decision, Playbook, Reference, Module, API Endpoint, Meeting Notes...
+- `generated.by` is you as `<cli>/<model>` (`claude/opus-5-5`, `codex/<model>`), `at` the current UTC time in ISO 8601 with `Z`
+- `status: draft` until someone reviewed the page, `stable` once checked, `deprecated` when another page replaces it
+- Never write `verified` with a `human:` actor yourself: it says a person checked the page
+- `sources`: what the page was drawn from (URL, path in the repository, another page); cite one in the text with a
+  footnote whose label is its `id`
+- Link another page by its path from the folder the pages share, made of folder and page titles in lowercase with
+  dashes: `[refund flow](/payments/refund-flow.md)` for the page "Refund flow" in the folder "Payments". The Drive
+  opens it in place; a link to a page not written yet is allowed
+- When you update a page, keep its front matter and the keys you do not know, and move `generated.at` if the content changed
+- `drive create` / `drive update` warn on stderr when the front matter has no `type` or is not valid YAML
+
+In a repository, an OKF bundle is a folder of such `.md` files (`index.md` lists a folder, `log.md` keeps its history,
+both without front matter). Check it with `sidehub-cli okf lint <folder>` before committing.
+""";
+
     private static string BuildSkillContent(string driveIndex)
     {
         return $"""
@@ -61,6 +103,8 @@ with `![caption](drive:<id>)`, where `<id>` is the id printed by `drive upload`:
 Put that line in the page (`drive create` / `drive update`). The page shows the image and resolves the reference each time
 it is opened: never paste a download URL, it expires. Only images (png, jpg, gif, webp, svg) of the same workspace are shown;
 any other reference appears as its caption, so write a caption that still makes sense alone.
+
+{OkfSection}
 
 ### Tasks
 - `sidehub-cli task list [--status <status>]`: List workspace tasks (filter by status)
@@ -177,6 +221,7 @@ knowledge that will help you and other agents work more effectively.
 - **After completing a task**: save learnings, decisions, or results worth reusing
 - **When you discover something** that would help future tasks (patterns, gotchas, decisions)
 - **When producing a deliverable** (report, analysis, documentation)
+- Write pages meant to be reused as OKF concepts (front matter with `type`, see "Pages as OKF concepts")
 - Do NOT create pages for trivial intermediate results or debug output
 - Do NOT duplicate information already in git history
 
