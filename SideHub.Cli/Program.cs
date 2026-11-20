@@ -162,6 +162,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  test create --file <test.yaml>   (a draft to validate when run from a run or a queued task)");
     Console.Error.WriteLine("  test update <key|id> --file <test.yaml>");
     Console.Error.WriteLine("  test archive <key|id> [--yes]");
+    Console.Error.WriteLine("  test script propose <key|id> --file <path from the root of the repository> [--grep \"<text of the test title>\"]   (the Playwright file written for a test: a member adopts it)");
     Console.Error.WriteLine("  test import <scenarios.yaml>");
     Console.Error.WriteLine("  test export [--repository <name|id>] [--output <file>]");
     Console.Error.WriteLine("  test run [--environment <name>] [--critical | --repository <name|id> | --test <key>...] [--fallbacks] [--cli claude|codex|agy|copilot] [--model <model>] [--agent <id>]");
@@ -219,7 +220,7 @@ var writeActions = new HashSet<string>
     "decide", "peer", "approve", "reject", "request-changes", "tool",
     "add", "remove", "skip", "push",
     "ask", "set", "trigger-add", "trigger-update", "trigger-delete",
-    "archive", "result", "results", "play"
+    "archive", "result", "results", "play", "script"
 };
 // `test status` reads an execution, unlike `task status` which changes a task.
 if (pipelineMode == "plan" && writeActions.Contains(action) && (domain, action) is not ("test", "status"))
@@ -334,6 +335,7 @@ try
         ("test", "create") => await TestCommands.CreateAsync(client, restArgs, jsonOutput),
         ("test", "update") => await TestCommands.UpdateAsync(client, restArgs, jsonOutput),
         ("test", "archive") => await TestCommands.ArchiveAsync(client, restArgs, jsonOutput),
+        ("test", "script") => await TestCommands.ScriptAsync(client, restArgs, jsonOutput),
         ("test", "import") => await TestCommands.ImportAsync(client, restArgs, jsonOutput),
         ("test", "export") => await TestCommands.ExportAsync(client, restArgs, jsonOutput),
         ("test", "run") => await TestCommands.RunAsync(client, restArgs, jsonOutput),

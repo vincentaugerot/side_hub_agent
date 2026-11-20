@@ -8,9 +8,10 @@ namespace SideHub.Cli.Commands;
 /// <summary>
 /// End-to-end tests of the workspace (SideHub doc 73). Writing them: a test is a file (<c>sidehub.qa/v1</c>: given,
 /// steps with when / then, values used and produced), created active from a terminal its user opened, proposed as a
-/// draft from a run or a queued task. Playing them: <c>test run</c> launches an execution; inside a run of an
-/// execution, <c>test result</c> and <c>test value</c> report each step and each value as the tests are played; a run
-/// of scripts types <c>test play</c>, which plays the scripted tests with Playwright and sends its report.
+/// draft from a run or a queued task; the script an agent wrote for one is proposed too (<c>test script propose</c>).
+/// Playing them: <c>test run</c> launches an execution; inside a run of an execution, <c>test result</c> and
+/// <c>test value</c> report each step and each value as the tests are played; a run of scripts types
+/// <c>test play</c>, which plays the scripted tests with Playwright and sends its report.
 /// </summary>
 public static class TestCommands
 {
@@ -191,6 +192,32 @@ public static class TestCommands
             return 0;
         }
         Console.WriteLine($"Archived test: {Prop(test, "key")}");
+        return 0;
+    }
+
+    /// <summary>
+    /// <c>test script propose</c>: the Playwright file an agent wrote for a test, proposed as its script. A member adopts
+    /// or discards it on the page of the test: an agent never changes a test on its own.
+    /// </summary>
+    public static async Task<int> ScriptAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var reference = args.FirstOrDefault() == "propose" ? Positionals(args[1..], "--file", "--grep").FirstOrDefault() : null;
+        var file = GetOption(args, "--file");
+        if (reference is null || string.IsNullOrWhiteSpace(file))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli test script propose <key|id> --file <path from the root of the repository> [--grep \"<text of the test title>\"]");
+            return 1;
+        }
+
+        var grep = GetOption(args, "--grep");
+        var test = await client.ProposeTestScriptAsync(await ResolveTestIdAsync(client, reference), file, grep);
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(test));
+            return 0;
+        }
+        Console.WriteLine($"Proposed script for the test {Prop(test, "key")} ({Prop(test, "title")}): {file}{(grep is null ? "" : $", grep \"{grep}\"")}");
+        Console.WriteLine("A member adopts or discards it on the page of the test in SideHub. Until then the test is unchanged.");
         return 0;
     }
 

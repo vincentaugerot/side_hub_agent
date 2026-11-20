@@ -128,6 +128,56 @@ public sealed class CliTestCommandsTests : IDisposable
     }
 
     [Fact]
+    public async Task Script_propose_sends_the_file_and_the_grep_of_a_test_found_by_its_key()
+    {
+        _api.Respond("/tests", Catalog);
+        _api.Respond($"/tests/{TestId}/script-proposal",
+            """{"key":"login","title":"Log in","mode":"agent","proposedScript":{"script":{"file":"e2e/login.spec.ts","grep":"logs in"},"at":"2026-11-20T10:00:00Z","agentName":"agent-1"}}""");
+
+        Assert.Equal(0, await TestCommands.ScriptAsync(_client, ["propose", "login", "--file", "e2e/login.spec.ts", "--grep", "logs in"], json: false));
+        Assert.Equal(0, await TestCommands.ScriptAsync(_client, ["propose", "--file", "e2e/login.spec.ts", TestId], json: true));
+
+        Assert.Equal(
+        [
+            $"GET /api/workspaces/{WorkspaceId}/tests", $"POST /api/tests/{TestId}/script-proposal",
+            $"POST /api/tests/{TestId}/script-proposal",
+        ], _api.Methods);
+        Assert.Equal("e2e/login.spec.ts", _api.Calls[1].Json.GetProperty("file").GetString());
+        Assert.Equal("logs in", _api.Calls[1].Json.GetProperty("grep").GetString());
+        // Without a grep, the file alone names the Playwright test
+        Assert.Equal("e2e/login.spec.ts", _api.Calls[2].Json.GetProperty("file").GetString());
+        Assert.Equal(JsonValueKind.Null, _api.Calls[2].Json.GetProperty("grep").ValueKind);
+    }
+
+    [Theory]
+    [InlineData]
+    [InlineData("propose")]
+    [InlineData("propose", "login")]
+    [InlineData("propose", "--file", "e2e/login.spec.ts")]
+    [InlineData("propose", "login", "--grep", "logs in")]
+    [InlineData("adopt", "login", "--file", "e2e/login.spec.ts")]
+    public async Task Script_propose_needs_a_test_and_a_file(params string[] args)
+    {
+        Assert.Equal(1, await TestCommands.ScriptAsync(_client, args, json: false));
+        Assert.Empty(_api.Calls);
+    }
+
+    [Fact]
+    public async Task A_script_the_backend_refuses_is_told_as_it_says_it()
+    {
+        _api.Respond("/tests", Catalog);
+        _api.Respond($"/tests/{TestId}/script-proposal", """{"error":"The test 'login' is already played by a script."}""", HttpStatusCode.Conflict);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(
+            () => TestCommands.ScriptAsync(_client, ["propose", TestId, "--file", "e2e/login.spec.ts"], json: false));
+
+        Assert.Equal("The test 'login' is already played by a script.", error.Message);
+        var unknown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => TestCommands.ScriptAsync(_client, ["propose", "nope", "--file", "e2e/login.spec.ts"], json: false));
+        Assert.Contains("no test 'nope'", unknown.Message);
+    }
+
+    [Fact]
     public async Task Import_sends_the_catalog_and_export_writes_the_file()
     {
         _api.Respond("/tests/import", """{"created":[{"key":"login"}],"updated":[{"key":"signup","version":3}]}""");
@@ -483,5 +533,45 @@ public sealed class CliTestCommandsTests : IDisposable
             () => TestCommands.ResultsAsync(_client, ["import", File("""{"suites":[]}""", "report.json")], json: false));
 
         Assert.Equal("This execution is over.", error.Message);
+    }
+}
+
+/// <summary>What <c>sidehub-cli test script propose</c> tells the agent once its script is proposed.</summary>
+[Collection(nameof(ConsoleOutputCollection))]
+public sealed class CliTestScriptProposalOutputTests : IDisposable
+{
+    private const string TestId = "22222222-2222-2222-2222-222222222222";
+
+    private readonly FakeSideHubApi _api = new();
+    private readonly SideHubApiClient _client;
+
+    public CliTestScriptProposalOutputTests() =>
+        _client = new SideHubApiClient(_api.Url, "sh_pty_test", "11111111-1111-1111-1111-111111111111", "agent-1");
+
+    public void Dispose()
+    {
+        _client.Dispose();
+        _api.Dispose();
+    }
+
+    [Fact]
+    public async Task It_names_the_test_and_says_a_member_decides()
+    {
+        _api.Respond($"/tests/{TestId}/script-proposal", """{"key":"login","title":"Log in","mode":"agent"}""");
+
+        var stdout = Console.Out;
+        var writer = new StringWriter();
+        Console.SetOut(TextWriter.Synchronized(writer));
+        try
+        {
+            Assert.Equal(0, await TestCommands.ScriptAsync(_client, ["propose", TestId, "--file", "e2e/login.spec.ts", "--grep", "logs in"], json: false));
+        }
+        finally
+        {
+            Console.SetOut(stdout);
+        }
+
+        Assert.Contains("Proposed script for the test login (Log in): e2e/login.spec.ts, grep \"logs in\"", writer.ToString());
+        Assert.Contains("A member adopts or discards it on the page of the test in SideHub. Until then the test is unchanged.", writer.ToString());
     }
 }

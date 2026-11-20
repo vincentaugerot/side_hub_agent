@@ -200,6 +200,12 @@ Writing a scripted test:
 - A value a step produces is written to the JSON file named by `SIDEHUB_TEST_VALUES_FILE`: `{ "account.email": "..." }`.
 - Set `screenshot: 'only-on-failure'` in the Playwright config: a failure then shows its capture. The script cleans up what it created (`afterAll`).
 - `sidehub-cli test play` and `sidehub-cli test results import` are typed by the runs SideHub launches to play scripts: never run them yourself.
+
+When asked to write the script of a test:
+- Read the test (`sidehub-cli test get <key>`): its steps are the plan.
+- Write a Playwright spec in the repository, by the rules above: one `test.step` per step of the test, in the same order, the address read in `SIDEHUB_TEST_URL`, no credential in the file (the secrets of the environment are environment variables). Find the elements by role or label; add a `data-testid` only where there is no accessible name.
+- Run it until it passes (`npx playwright test <file>`, with `SIDEHUB_TEST_URL` set to the address of the application), and commit it with the rest of the task.
+- Propose it: `sidehub-cli test script propose <key> --file <path from the root of the repository> [--grep "<text of the test title>"]`. A member adopts or discards it on the page of the test: never change the test yourself.
 """;
 
     private static string BuildSkillContent(string driveIndex)

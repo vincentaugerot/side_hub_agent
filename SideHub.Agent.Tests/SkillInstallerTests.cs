@@ -317,6 +317,28 @@ public class SkillInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task Skill_tells_how_to_write_the_script_of_a_test_and_propose_it()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        foreach (var file in new[] { Path.Combine(".claude", "commands", "sidehub.md"), "AGENTS.md", "GEMINI.md" })
+        {
+            var skill = File.ReadAllText(Path.Combine(_repo, file));
+            Assert.Contains("When asked to write the script of a test:", skill);
+            Assert.Contains("Read the test (`sidehub-cli test get <key>`): its steps are the plan", skill);
+            Assert.Contains("one `test.step` per step of the test, in the same order", skill);
+            Assert.Contains("no credential in the file", skill);
+            Assert.Contains("by role or label; add a `data-testid` only where there is no accessible name", skill);
+            Assert.Contains("Run it until it passes (`npx playwright test <file>`", skill);
+            Assert.Contains("commit it with the rest of the task", skill);
+            // Proposed, never applied: a member adopts the script on the page of the test
+            Assert.Contains("sidehub-cli test script propose <key> --file <path from the root of the repository> [--grep \"<text of the test title>\"]", skill);
+            Assert.Contains("A member adopts or discards it on the page of the test: never change the test yourself", skill);
+            Assert.DoesNotContain("\u2014", skill);
+        }
+    }
+
+    [Fact]
     public async Task Skill_tells_how_a_local_environment_starts_the_application()
     {
         await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);

@@ -1088,6 +1088,11 @@ public class SideHubApiClient : IDisposable
     public Task<JsonElement> ChangeTestStatusAsync(string testId, string action) =>
         PostAsync($"api/tests/{Uri.EscapeDataString(testId)}/{action}", null);
 
+    /// <summary>Proposes the Playwright file written for a test (the token of a queued task or of a run): a member adopts it.</summary>
+    /// <param name="file">From the root of the repository.</param>
+    public Task<JsonElement> ProposeTestScriptAsync(string testId, string file, string? grep) =>
+        PostAsync($"api/tests/{Uri.EscapeDataString(testId)}/script-proposal", new { file, grep });
+
     public Task<JsonElement> ImportTestsAsync(string yaml) =>
         PostAsync($"api/workspaces/{_workspaceId}/tests/import", new { yaml });
 
