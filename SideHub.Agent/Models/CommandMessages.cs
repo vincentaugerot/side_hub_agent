@@ -147,6 +147,10 @@ public class IncomingMessage
     [JsonPropertyName("runId")]
     public string? RunId { get; init; }
 
+    /// <summary>test.app.stop: the local test execution (a GUID) that is over, whose application is stopped.</summary>
+    [JsonPropertyName("executionId")]
+    public string? ExecutionId { get; init; }
+
     /// <summary>git.push.request: the commit the push was confirmed for (it must still be HEAD).</summary>
     [JsonPropertyName("head")]
     public string? Head { get; init; }
@@ -305,6 +309,8 @@ public class PtyStartRefusedMessage
 {
     /// <summary>The updater is replacing the agent: anything started now would be cut within seconds.</summary>
     public const string AgentUpdating = "agent-updating";
+    /// <summary>The application a run of a local test execution plays could not be made ready (<see cref="Detail"/> says why).</summary>
+    public const string TestAppFailed = "test-app-failed";
 
     [JsonPropertyName("type")]
     public string Type => "pty.start-refused";
@@ -314,6 +320,50 @@ public class PtyStartRefusedMessage
 
     [JsonPropertyName("reason")]
     public required string Reason { get; init; }
+
+    /// <summary>What a person needs to fix it, when the reason alone does not tell: a sentence or two, then the last
+    /// lines of what failed, secrets of the PTY masked, 600 characters at most.</summary>
+    [JsonPropertyName("detail"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Detail { get; init; }
+}
+
+/// <summary>
+/// The application a run of a local test execution plays answers (doc 73), started by the agent on its machine or
+/// found running for the execution: sent for each of its runs, before the run's <c>pty.started</c>.
+/// </summary>
+public class TestAppStartedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "test.app.started";
+
+    [JsonPropertyName("executionId")]
+    public required Guid ExecutionId { get; init; }
+
+    [JsonPropertyName("runId")]
+    public required Guid RunId { get; init; }
+
+    /// <summary>The folder played, absolute: the queue's worktree (<see cref="Worktree"/>) or the agent's folder.</summary>
+    [JsonPropertyName("directory")]
+    public required string Directory { get; init; }
+
+    [JsonPropertyName("worktree")]
+    public bool Worktree { get; init; }
+
+    /// <summary>Null when HEAD is detached, or outside a git repository.</summary>
+    [JsonPropertyName("branch")]
+    public string? Branch { get; init; }
+
+    /// <summary>The full sha of HEAD; null outside a git repository.</summary>
+    [JsonPropertyName("head")]
+    public string? Head { get; init; }
+
+    /// <summary>From the start of its command to its first answer; 0 when <see cref="Reused"/>.</summary>
+    [JsonPropertyName("readyAfterMs")]
+    public long ReadyAfterMs { get; init; }
+
+    /// <summary>It was already running for this execution: a previous run started it.</summary>
+    [JsonPropertyName("reused")]
+    public bool Reused { get; init; }
 }
 
 public class PtyExitedMessage

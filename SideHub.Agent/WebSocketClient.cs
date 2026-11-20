@@ -7,6 +7,7 @@ using System.Text.Json;
 using SideHub.Agent.Models;
 using SideHub.Agent.Outgoing;
 using SideHub.Agent.Review;
+using SideHub.Agent.Testing;
 using SideHub.Agent.Update;
 using SideHub.Agent.Usage;
 
@@ -109,6 +110,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly TestRunCaptures _testCaptures;
     // The runs of tests going on, by PTY: what is needed to read their images once the PTY is gone.
     private readonly ConcurrentDictionary<string, TestRun> _testRuns = new();
+    // The application a local test execution plays, started on this machine and kept from one of its runs to the next.
+    private readonly TestAppHost _testApp;
     // Where peer review runs read the end of the reviewed round, one disposable worktree per run.
     private readonly PeerReviewCheckout _peerReviews;
     // Where the tasks of the queue run (doc 71), out of the folder the user works in.
@@ -215,6 +218,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         // The queue's work is pushed from its worktree once there is one; before, from the agent's folder.
         _outgoing = new OutgoingCommitsReporter(
             () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false), TrySendAsync, Log);
+        // And played from there by a local test execution, as it is: no fetch, no setup.
+        _testApp = new TestAppHost(workingDirectory,
+            () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false),
+            Path.Combine(runDir, "tests"), HasLiveTestTerminal, Log);
         _defaultBranchTip = new DefaultBranchTipReporter(workingDirectory, ReadDefaultBranchAsync, TrySendAsync, Log);
         // Where each terminal works (branch, worktree), read in the folder it was started in
         _gitPlaces = new PtyGitPlaces(() => _ptyCwd.Where(entry => _ptySessions.ContainsKey(entry.Key)), TrySendAsync, Log);
@@ -1882,6 +1889,14 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 case "git.push.request":
                     RunInBackground("git.push.request", () => HandleGitPushRequestAsync(message, ct));
                     break;
+                // A local test execution is over (finished, canceled or in error): its application is stopped, and a
+                // start of it still waiting gives up. Off the loop: killing its processes takes a moment.
+                case "test.app.stop":
+                    if (Guid.TryParse(message.ExecutionId, out var endedExecution))
+                        RunInBackground("test.app.stop", () => _testApp.StopAsync(endedExecution, "its execution is over"));
+                    else
+                        Log("test.app.stop ignored: executionId is required");
+                    break;
                 case "file.write.start":
                     await HandleFileWriteStartAsync(message, ct);
                     break;
@@ -2469,6 +2484,18 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             var rows = message.Rows ?? 30;
             var cwd = ResolvePtyWorkingDirectory(message.WorkingDirectory, ptySessionId);
 
+            // A run of a local test execution (doc 73) plays the application this agent starts, in the folder of the
+            // queue's work as it is, and runs there too. Waiting for it to answer can take minutes (the backend waits
+            // 5 for these runs): nothing of the PTY is set up before, so a refusal leaves nothing behind.
+            LocalTestRun? localTest = null;
+            if (message.AdditionalEnv?.GetValueOrDefault(TestAppHost.AppVariable) == TestAppHost.LocalApp)
+            {
+                localTest = await EnsureTestAppAsync(ptySessionId, message, ct);
+                if (localTest is null)
+                    return;
+                cwd = localTest.App.Directory;
+            }
+
             // Set up the CLI-session notification FIFO BEFORE building the env,
             // because the env points the wrappers at it.
             EnsureNotifyFifo(ptySessionId);
@@ -2517,9 +2544,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
             // A task of the agent's queue runs in the queue's worktree (doc 71), never in the folder the user works in:
             // its review shows its changes alone. So does a tab opened on the queue's work ("Intégrer et pousser").
-            // Without a usable worktree, in the agent's folder as before.
+            // Without a usable worktree, in the agent's folder as before. Not a run of a local test execution: it plays
+            // the worktree as its application was started in it, never fetched nor moved under it.
             PreparedWorktree? worktree = null;
-            if (checkout is null && message.AdditionalEnv?.GetValueOrDefault(QueueWorktree.PlaceVariable) == QueueWorktree.QueuePlace)
+            if (checkout is null && localTest is null
+                && message.AdditionalEnv?.GetValueOrDefault(QueueWorktree.PlaceVariable) == QueueWorktree.QueuePlace)
             {
                 worktree = await _queueWorktree.PrepareAsync(_workingDirectory, ct);
                 if (worktree is not null)
@@ -2627,7 +2656,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 {
                     _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId], checkout);
                     if (runKind == TestRunCaptures.RunKind)
-                        _testRuns[ptySessionId] = new TestRun(runId, _ptyCwd[ptySessionId], startedAt, message.AdditionalEnv, message.SecretKeys);
+                        _testRuns[ptySessionId] = new TestRun(runId, _ptyCwd[ptySessionId], startedAt, message.AdditionalEnv, message.SecretKeys,
+                            localTest?.ExecutionId);
                 }
                 StartFifoReader(ptySessionId, ct);
                 // The worktree's setup runs first: the shell reads the CLI's line, typed after pty.started, once it ends.
@@ -2950,7 +2980,53 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     }
 
     /// <summary>A run of tests going on in a PTY: its folder, when it started, and its secrets (masked in the titles of its images).</summary>
-    private sealed record TestRun(Guid RunId, string Cwd, DateTimeOffset StartedAt, Dictionary<string, string>? Env, List<string>? SecretKeys);
+    /// <param name="LocalExecution">Its execution, when it plays the application this agent started for it.</param>
+    private sealed record TestRun(Guid RunId, string Cwd, DateTimeOffset StartedAt, Dictionary<string, string>? Env, List<string>? SecretKeys,
+        Guid? LocalExecution = null);
+
+    /// <summary>A run of a local test execution, and the application it plays.</summary>
+    private sealed record LocalTestRun(Guid ExecutionId, TestAppStarted App);
+
+    /// <summary>
+    /// Before the PTY of a run of a local test execution (doc 73): the application of its execution is started, or found
+    /// running, and the backend told where it plays (<c>test.app.started</c>). Null when it could not be made ready:
+    /// the PTY is refused with the reason (<c>test-app-failed</c> and its detail), nothing is started.
+    /// </summary>
+    private async Task<LocalTestRun?> EnsureTestAppAsync(string ptySessionId, IncomingMessage message, CancellationToken ct)
+    {
+        var env = message.AdditionalEnv!;
+        string? failure;
+        if (!Guid.TryParse(env.GetValueOrDefault(TestAppHost.ExecutionVariable), out var executionId)
+            || RunUsageCollector.ResolveRunId(ptySessionId, env) is not { } runId)
+            failure = $"The run does not say which test execution it belongs to ({TestAppHost.ExecutionVariable}): no application was started.";
+        else
+        {
+            // A masker of its own: the PTY's follows its output, chunk after chunk.
+            var result = await _testApp.EnsureAsync(executionId, env.GetValueOrDefault(TestAppHost.UrlVariable),
+                SecretMasker.For(env, message.SecretKeys), ct);
+            if (result.Started is { } app)
+            {
+                await TrySendAsync(new TestAppStartedMessage
+                {
+                    ExecutionId = executionId, RunId = runId, Directory = app.Directory, Worktree = app.Worktree,
+                    Branch = app.Branch, Head = app.Head, ReadyAfterMs = app.ReadyAfterMs, Reused = app.Reused,
+                }, ct);
+                return new LocalTestRun(executionId, app);
+            }
+            failure = result.Failure;
+        }
+        Log($"PTY {ptySessionId} not started: the application of its test execution is not ready");
+        await TrySendAsync(new PtyStartRefusedMessage
+        {
+            PtySessionId = ptySessionId, Reason = PtyStartRefusedMessage.TestAppFailed, Detail = failure,
+        }, ct);
+        return null;
+    }
+
+    /// <summary>Whether the PTY of a run of this local test execution is alive: it keeps the application running.</summary>
+    private bool HasLiveTestTerminal(Guid executionId) =>
+        _testRuns.Any(run => run.Value.LocalExecution == executionId
+                             && _ptySessions.TryGetValue(run.Key, out var session) && session.Executor.IsRunning);
 
     /// <summary>
     /// The images the CLIs of a terminal saw since a moment (doc 70): the tool calls of their transcripts, read with the
@@ -3111,6 +3187,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _cliSessionUsageTimer = null;
         _rebootCheckTimer?.Dispose();
         _rebootCheckTimer = null;
+        // The application of a local test execution does not outlive the agent that started it.
+        await _testApp.DisposeAsync();
 
         // Dispose multi-PTY sessions
         foreach (var (sid, session) in _ptySessions)
