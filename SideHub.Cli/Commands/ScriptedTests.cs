@@ -13,7 +13,7 @@ namespace SideHub.Cli.Commands;
 /// </summary>
 public static class ScriptedTests
 {
-    /// <summary>Set for a script: the JSON file it writes the values its steps produce to.</summary>
+    /// <summary>Set for a script: the JSON file it writes the values it produces to.</summary>
     public const string ValuesFileVariable = "SIDEHUB_TEST_VALUES_FILE";
 
     /// <summary>Where Playwright's JSON reporter writes (1.58: <c>resolveOutputFile</c> in reporters/base.js).</summary>

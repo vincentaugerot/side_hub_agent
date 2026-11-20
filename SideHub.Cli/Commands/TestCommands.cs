@@ -61,8 +61,12 @@ public static class TestCommands
         {
             var history = Items(test, "history");
             var last = history.Count > 0 ? Prop(history[^1], "status") ?? "-" : "-";
+            // The steps of a scripted test are those its script named at its last execution: none known before the first one
+            var scripted = Prop(test, "mode") == "script";
+            var read = scripted && test.TryGetProperty("scriptSteps", out var reading) && reading.ValueKind == JsonValueKind.Object ? Items(reading, "steps").Count : 0;
+            var steps = scripted ? (read > 0 ? read.ToString() : "-") : Items(test, "steps").Count.ToString();
             Console.WriteLine($"{Truncate(Prop(test, "key") ?? "", 34),-34} {Prop(test, "status"),-12} {Prop(test, "priority"),-9} {Prop(test, "mode"),-7} " +
-                $"{Items(test, "steps").Count,-6} {last,-13} {Truncate(Prop(test, "feature") ?? "", 18),-18} {Truncate(Prop(test, "title") ?? "", 60)}");
+                $"{steps,-6} {last,-13} {Truncate(Prop(test, "feature") ?? "", 18),-18} {Truncate(Prop(test, "title") ?? "", 60)}");
         }
         return 0;
     }
@@ -103,6 +107,8 @@ public static class TestCommands
                 Console.WriteLine($"  - {Prop(need, "name")}{producer}{fallback}");
             }
         }
+        if (Prop(test, "mode") == "script")
+            PrintScript(test);
         var steps = Items(test, "steps");
         for (var i = 0; i < steps.Count; i++)
         {
@@ -123,6 +129,36 @@ public static class TestCommands
         if (outcomes.Count > 0)
             Console.WriteLine("Last runs:    " + string.Join(", ", outcomes.Select(o => $"#{Prop(o, "number")} {Prop(o, "status")}")));
         return 0;
+    }
+
+    /// <summary>
+    /// A scripted test: its Playwright file, the values it sets, and its steps. Nothing of them is written in SideHub:
+    /// they are the top-level <c>test.step</c> of the file, as its last execution read them in its report.
+    /// </summary>
+    private static void PrintScript(JsonElement test)
+    {
+        if (test.TryGetProperty("script", out var script) && script.ValueKind == JsonValueKind.Object)
+        {
+            Console.WriteLine($"Script:       {Prop(script, "file")}{(Prop(script, "grep") is { } grep ? $" (grep \"{grep}\")" : "")}");
+            var produces = Items(script, "produces");
+            if (produces.Count > 0)
+                Console.WriteLine("Produces:     " + string.Join(", ", produces.Select(p => Bool(p, "secret") ? $"{Prop(p, "name")} (secret)" : Prop(p, "name"))));
+        }
+        Console.WriteLine();
+        if (!test.TryGetProperty("scriptSteps", out var reading) || reading.ValueKind != JsonValueKind.Object)
+        {
+            Console.WriteLine("Steps:        those of the script (its top-level test.step). No execution has read them yet: read the file.");
+            return;
+        }
+        Console.WriteLine($"Steps of the script, as execution #{Prop(reading, "number")} read them (its top-level test.step, nothing is written in SideHub):");
+        var steps = Items(reading, "steps");
+        for (var i = 0; i < steps.Count; i++)
+            Console.WriteLine($"Step {i + 1}: {Prop(steps[i], "title")}");
+        if (!Bool(reading, "complete"))
+            Console.WriteLine("The script failed before its end: its next steps are not known yet.");
+        var before = Items(reading, "before");
+        if (before.Count > 0)
+            Console.WriteLine("Its steps changed at that execution. Before: " + string.Join(" | ", before.Select(b => b.GetString())));
     }
 
     public static async Task<int> CreateAsync(SideHubApiClient client, string[] args, bool json)

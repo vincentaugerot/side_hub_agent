@@ -65,6 +65,40 @@ public sealed class CliTestCommandsTests : IDisposable
     }
 
     [Fact]
+    public async Task Get_shows_the_steps_of_a_scripted_test_as_its_script_named_them()
+    {
+        _api.Respond($"/tests/{TestId}", """
+            {"id":"22222222-2222-2222-2222-222222222222","key":"login","title":"Log in","feature":"Account","status":"active","version":3,"priority":"critical",
+             "mode":"script","writes":false,"repositories":[{"id":"r-1","name":"side_hub"}],"given":[],"needs":[],"steps":[],"history":[],
+             "script":{"repositoryId":"r-1","file":"e2e/login.spec.ts","grep":"logs in","produces":[{"name":"session.id","secret":true}]},
+             "scriptSteps":{"number":12,"complete":false,"before":["I open the login page"],
+               "steps":[{"title":"I open the login page and the form is shown","durationMs":400},{"title":"I log in and land on the cockpit"}]}}
+            """);
+        var stdout = Console.Out;
+        var writer = new StringWriter();
+        Console.SetOut(TextWriter.Synchronized(writer));
+        try
+        {
+            Assert.Equal(0, await TestCommands.GetAsync(_client, [TestId], json: false));
+        }
+        finally
+        {
+            Console.SetOut(stdout);
+        }
+
+        var printed = writer.ToString();
+        Assert.Contains("Played by:    a script", printed);
+        Assert.Contains("Script:       e2e/login.spec.ts (grep \"logs in\")", printed);
+        Assert.Contains("Produces:     session.id (secret)", printed);
+        Assert.Contains("Steps of the script, as execution #12 read them (its top-level test.step, nothing is written in SideHub):", printed);
+        Assert.Contains("Step 1: I open the login page and the form is shown", printed);
+        Assert.Contains("Step 2: I log in and land on the cockpit", printed);
+        Assert.Contains("The script failed before its end: its next steps are not known yet.", printed);
+        Assert.Contains("Its steps changed at that execution. Before: I open the login page", printed);
+        Assert.DoesNotContain("When:", printed);
+    }
+
+    [Fact]
     public async Task Create_from_a_terminal_its_user_opened_makes_an_active_test()
     {
         _api.Respond("/agent/me", """{"token":"terminal","actingUser":{"email":"ana@test.com","role":"owner"}}""");

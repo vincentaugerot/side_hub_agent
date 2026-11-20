@@ -302,8 +302,13 @@ public class SkillInstallerTests : IDisposable
             var skill = File.ReadAllText(Path.Combine(_repo, file));
             Assert.Contains("A scripted test (`mode: script`) names a Playwright file of its repository", skill);
             Assert.Contains("without tokens, on an agent whose folder holds that repository", skill);
-            Assert.Contains("One `test.step` per step of the test, at the top level of the Playwright test, in the same order", skill);
+            // The script is the only description of the test: its test.step are its steps, read by SideHub
+            Assert.Contains("The file is its only description: no\n`steps` and no `given` are written in SideHub", skill);
+            Assert.Contains("Each `test.step` at the top level of the Playwright test is a step of the test, in order", skill);
+            Assert.Contains("a full sentence, in the language of the test, that says what the step does and what it proves", skill);
             Assert.Contains("Assert nothing outside a `test.step`", skill);
+            Assert.Contains("A value the script produces is declared in `script.produces`", skill);
+            Assert.DoesNotContain("One `test.step` per step of the test, at the top level", skill);
             Assert.Contains("File and grep name exactly one Playwright test", skill);
             // What a script reads and writes, under the names sidehub-cli test play gives them
             Assert.Contains("The address of the application is in `SIDEHUB_TEST_URL`: read it there, never hard-code it", skill);
@@ -326,8 +331,11 @@ public class SkillInstallerTests : IDisposable
             var skill = File.ReadAllText(Path.Combine(_repo, file));
             Assert.Contains("When asked to write the script of a test:", skill);
             Assert.Contains("Read the test (`sidehub-cli test get <key>`): its steps are the plan", skill);
-            Assert.Contains("one `test.step` per step of the test, in the same order", skill);
+            Assert.Contains("one `test.step` per step of the test, in the same order, each titled by a sentence", skill);
             Assert.Contains("no credential in the file", skill);
+            // The other way round: steps written from the script, only from a terminal the user opened
+            Assert.Contains("When asked to have a scripted test played by an agent again:", skill);
+            Assert.Contains("In a run or a queued task, give the file back instead: an agent on its own never changes a test", skill);
             Assert.Contains("by role or label; add a `data-testid` only where there is no accessible name", skill);
             Assert.Contains("Run it until it passes (`npx playwright test <file>`", skill);
             Assert.Contains("commit it with the rest of the task", skill);
@@ -363,7 +371,7 @@ public class SkillInstallerTests : IDisposable
     }
 
     [Fact]
-    public async Task The_scripted_test_of_the_skill_has_one_test_step_per_step()
+    public async Task The_scripted_test_of_the_skill_writes_no_step_and_its_spec_names_them_by_a_sentence()
     {
         await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
         var skill = File.ReadAllText(Path.Combine(_repo, "AGENTS.md"));
@@ -374,14 +382,16 @@ public class SkillInstallerTests : IDisposable
         stream.Load(new StringReader(yaml));
         var test = (YamlDotNet.RepresentationModel.YamlMappingNode)stream.Documents.Single().RootNode;
         var script = (YamlDotNet.RepresentationModel.YamlMappingNode)test.Children["script"];
-        var steps = ((YamlDotNet.RepresentationModel.YamlSequenceNode)test.Children["steps"]).Children
-            .Select(s => ((YamlDotNet.RepresentationModel.YamlMappingNode)s).Children["title"].ToString()).ToList();
+        var titles = System.Text.RegularExpressions.Regex.Matches(spec, @"await test\.step\('([^']+)'").Select(m => m.Groups[1].Value).ToList();
 
         Assert.Equal("script", test.Children["mode"].ToString());
+        Assert.DoesNotContain("steps", test.Children.Keys.Select(k => k.ToString()));
+        Assert.DoesNotContain("given", test.Children.Keys.Select(k => k.ToString()));
         Assert.Equal("e2e/login.spec.ts", script.Children["file"].ToString());
-        // The grep names the one Playwright test of the example, whose test.step are the steps, in order
+        // The grep names the one Playwright test of the example, whose test.step are the steps, each named by a sentence
         Assert.Contains($"test('{script.Children["grep"]}', ", spec);
-        Assert.Equal(steps, System.Text.RegularExpressions.Regex.Matches(spec, @"await test\.step\('([^']+)'").Select(m => m.Groups[1].Value));
+        Assert.Equal(2, titles.Count);
+        Assert.All(titles, title => Assert.True(title.Split(' ').Length >= 5, title));
         Assert.Contains("process.env.SIDEHUB_TEST_URL", spec);
         Assert.Contains("process.env.SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL", spec);
     }
@@ -401,7 +411,9 @@ public class SkillInstallerTests : IDisposable
             var stream = new YamlDotNet.RepresentationModel.YamlStream();
             stream.Load(new StringReader(example));
             var test = Assert.IsType<YamlDotNet.RepresentationModel.YamlMappingNode>(stream.Documents.Single().RootNode);
-            Assert.Contains(test.Children.Keys, k => k.ToString() == "steps");
+            // A test an agent plays is written with its steps; a scripted one has none, its script names them.
+            var scripted = test.Children.TryGetValue(new YamlDotNet.RepresentationModel.YamlScalarNode("mode"), out var mode) && mode.ToString() == "script";
+            Assert.Equal(!scripted, test.Children.Keys.Any(k => k.ToString() == "steps"));
             // The backend refuses a test that does both: the tests that set values are played first, in one pass.
             Assert.False(example.Contains("needs:") && example.Contains("produces:"));
         }
