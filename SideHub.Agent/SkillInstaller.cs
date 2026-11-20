@@ -91,6 +91,13 @@ unstable: nothing is asserted).
 - `sidehub-cli test run [--environment <name>] [--critical | --repository <name> | --test <key>...] [--cli claude|codex|agy|copilot]`: Launch an execution (user); without a selection, every active test. `sidehub-cli test status [<number>]`: its verdict and the result of each test, step by step
 - `sidehub-cli test result ...`, `sidehub-cli test value set|get ...`: Only inside a run SideHub launched to play tests; its prompt says how
 
+A local environment plays the application this agent starts on its machine, in the folder of its queue's work (the
+queue's worktree once there is one, as it is), with the command of `.sidehub/worktree.json` in the agent's folder:
+`{ "test": { "start": "npm run dev", "ready": "http://127.0.0.1:4173/health", "timeout": 120 } }`. `test.start` keeps
+running while the tests play, and reads the address it must serve in `SIDEHUB_TEST_URL`. `test.ready` (the address
+that answers once it is up: by default the one the tests visit) and `test.timeout` (seconds to wait for it, 120 by
+default) are optional. Without `test.start`, an execution on a local environment fails and says what to write.
+
 A test file (`sidehub.qa/v1`, one test; a catalog lists several under `scenarios:`):
 ```yaml
 id: signup-then-login
@@ -188,7 +195,7 @@ test('logs in', async ({ page }) => {
 Writing a scripted test:
 - One `test.step` per step of the test, at the top level of the Playwright test, in the same order. Assert nothing outside a `test.step`: SideHub reads the result of each step in its `test.step`.
 - File and grep name exactly one Playwright test: with several, or none, the test is inconclusive. The grep is a text of its title (its `describe` titles, then its own): never anchor it with `^`, Playwright reads it after the project and the file.
-- The address of the application is in `SIDEHUB_TEST_URL`. The secrets of the environment (`QA_PASSWORD`) are environment variables.
+- The address of the application is in `SIDEHUB_TEST_URL`: read it there, never hard-code it (on a local environment it is the application the agent started). The secrets of the environment (`QA_PASSWORD`) are environment variables.
 - A value the test uses is read in `SIDEHUB_TEST_VALUE_<NAME>` (`account.email` gives `SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL`). Its fallback is already there when no test of the execution produced it.
 - A value a step produces is written to the JSON file named by `SIDEHUB_TEST_VALUES_FILE`: `{ "account.email": "..." }`.
 - Set `screenshot: 'only-on-failure'` in the Playwright config: a failure then shows its capture. The script cleans up what it created (`afterAll`).

@@ -306,13 +306,37 @@ public class SkillInstallerTests : IDisposable
             Assert.Contains("Assert nothing outside a `test.step`", skill);
             Assert.Contains("File and grep name exactly one Playwright test", skill);
             // What a script reads and writes, under the names sidehub-cli test play gives them
-            Assert.Contains("`SIDEHUB_TEST_URL`", skill);
+            Assert.Contains("The address of the application is in `SIDEHUB_TEST_URL`: read it there, never hard-code it", skill);
             Assert.Contains("`account.email` gives `SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL`", skill);
             Assert.Contains($"`{SideHub.Cli.Commands.ScriptedTests.ValuesFileVariable}`: `{{ \"account.email\": \"...\" }}`", skill);
             Assert.Contains("screenshot: 'only-on-failure'", skill);
             Assert.Contains("(`afterAll`)", skill);
             Assert.Contains("`sidehub-cli test play` and `sidehub-cli test results import` are typed by the runs SideHub launches to play scripts: never run them yourself", skill);
             Assert.DoesNotContain("not played yet", skill);
+        }
+    }
+
+    [Fact]
+    public async Task Skill_tells_how_a_local_environment_starts_the_application()
+    {
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        foreach (var file in new[] { Path.Combine(".claude", "commands", "sidehub.md"), "AGENTS.md", "GEMINI.md" })
+        {
+            var skill = File.ReadAllText(Path.Combine(_repo, file));
+            Assert.Contains("A local environment plays the application this agent starts on its machine", skill);
+            Assert.Contains("in the folder of its queue's work", skill);
+            Assert.Contains("`test.ready`", skill);
+            Assert.Contains("`test.timeout`", skill);
+            // The example is a file the agent reads as it is
+            var example = System.Text.RegularExpressions.Regex.Match(skill, "`(?<json>\\{ \"test\": .*?\\} \\})`").Groups["json"].Value;
+            var path = Path.Combine(_repo, "worktree-example.json");
+            File.WriteAllText(path, example);
+            var config = SideHub.Agent.Testing.TestAppConfig.Read(path, "http://127.0.0.1:4173", out var problem);
+            Assert.True(config is not null, problem);
+            Assert.Equal("npm run dev", config.Start);
+            Assert.Equal("http://127.0.0.1:4173/health", config.Ready.OriginalString);
+            Assert.Equal(TimeSpan.FromSeconds(120), config.Timeout);
         }
     }
 
