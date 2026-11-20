@@ -328,6 +328,35 @@ public class PtyStartRefusedMessage
 }
 
 /// <summary>
+/// Answer to <c>test.script.request</c> (doc 73): the source of the Playwright file of a scripted test, read in the
+/// folder of the agent, with the commit it is at; or why it could not be read (<c>error</c>).
+/// </summary>
+public class TestScriptMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "test.script";
+
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
+
+    [JsonPropertyName("file")]
+    public required string File { get; init; }
+
+    [JsonPropertyName("content")]
+    public string? Content { get; init; }
+
+    /// <summary>The branch checked out in the folder (null when detached) and the commit the file was read at.</summary>
+    [JsonPropertyName("branch")]
+    public string? Branch { get; init; }
+
+    [JsonPropertyName("head")]
+    public string? Head { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+}
+
+/// <summary>
 /// The application a run of a local test execution plays answers (doc 73), started by the agent on its machine or
 /// found running for the execution: sent for each of its runs, before the run's <c>pty.started</c>.
 /// </summary>

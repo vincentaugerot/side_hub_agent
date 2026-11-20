@@ -1886,6 +1886,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 case "run.capture.request":
                     RunInBackground("run.capture.request", () => HandleRunCaptureRequestAsync(message, ct));
                     break;
+                case "test.script.request":
+                    RunInBackground("test.script.request", () => HandleTestScriptRequestAsync(message, ct));
+                    break;
                 case "git.push.request":
                     RunInBackground("git.push.request", () => HandleGitPushRequestAsync(message, ct));
                     break;
@@ -2977,6 +2980,23 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var answer = await _testCaptures.CaptureAsync(message.RequestId, runId, image, ct);
         Log($"Test run {runId} capture {image}: " + (answer.Error ?? $"{answer.Data!.Length} base64 chars"));
         await SendAsync(answer, ct);
+    }
+
+    /// <summary>
+    /// The source of the script of a test (doc 73), read in this folder for the page of the test: the file as it is
+    /// checked out here, which is the one an execution plays. Its content is never logged.
+    /// </summary>
+    private async Task HandleTestScriptRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || message.Path is not { Length: > 0 } file)
+        {
+            Log("test.script.request ignored: requestId and path are required");
+            return;
+        }
+        var text = TestScriptSource.Read(_workingDirectory, file);
+        var (branch, head) = text.Content is null ? (null, null) : await TestAppHost.ReadHeadAsync(_workingDirectory, ct);
+        Log($"Test script {file}: " + (text.Error ?? $"{text.Content!.Length} chars sent"));
+        await SendAsync(new TestScriptMessage { RequestId = message.RequestId, File = file, Content = text.Content, Branch = branch, Head = head, Error = text.Error }, ct);
     }
 
     /// <summary>A run of tests going on in a PTY: its folder, when it started, and its secrets (masked in the titles of its images).</summary>
