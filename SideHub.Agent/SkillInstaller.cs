@@ -187,7 +187,7 @@ test('logs in', async ({ page }) => {
 
 Writing a scripted test:
 - One `test.step` per step of the test, at the top level of the Playwright test, in the same order. Assert nothing outside a `test.step`: SideHub reads the result of each step in its `test.step`.
-- File and grep name exactly one Playwright test: with several, or none, the test is inconclusive.
+- File and grep name exactly one Playwright test: with several, or none, the test is inconclusive. The grep is a text of its title (its `describe` titles, then its own): never anchor it with `^`, Playwright reads it after the project and the file.
 - The address of the application is in `SIDEHUB_TEST_URL`. The secrets of the environment (`QA_PASSWORD`) are environment variables.
 - A value the test uses is read in `SIDEHUB_TEST_VALUE_<NAME>` (`account.email` gives `SIDEHUB_TEST_VALUE_ACCOUNT_EMAIL`). Its fallback is already there when no test of the execution produced it.
 - A value a step produces is written to the JSON file named by `SIDEHUB_TEST_VALUES_FILE`: `{ "account.email": "..." }`.
