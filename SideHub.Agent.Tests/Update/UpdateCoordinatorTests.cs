@@ -354,6 +354,45 @@ public class UpdateCoordinatorTests : IDisposable
             Assert.True(File.GetUnixFileMode(updater).HasFlag(UnixFileMode.UserExecute));
     }
 
+    private InstanceHealth? Health => UpdateFiles.Read<InstanceHealth>(UpdateFiles.HealthPath(_project));
+
+    [Fact]
+    public void The_health_file_waits_for_the_startup_checks_then_follows_the_connections()
+    {
+        using var coordinator = Coordinator();
+        var since = _now.AddMinutes(-3);
+
+        // The updater takes the file as the verdict of the startup checks: nothing before they ran
+        coordinator.ReportConnection(_client, "dev", since);
+        Assert.Null(Health);
+
+        coordinator.ReportStartupChecks([]);
+        var checkedAt = _now;
+        Assert.True(Health!.Ok);
+        Assert.Equal([new AgentConnecting("dev", since)], Health!.Connecting);
+
+        _now = _now.AddMinutes(5);
+        coordinator.ReportConnection(_client, "dev", null);
+        Assert.Null(Health!.Connecting);
+        Assert.Equal(checkedAt, Health!.At);
+    }
+
+    [Fact]
+    public void A_connection_lost_later_leaves_the_verdict_of_the_startup_checks_as_it_was()
+    {
+        using var coordinator = Coordinator();
+        coordinator.ReportStartupChecks([new StartupChecks.Problem(DiagnosticReasons.PtyHelperFailed, "node: not found")]);
+        var checkedAt = _now;
+
+        _now = _now.AddHours(1);
+        coordinator.ReportConnection(_client, "dev", _now);
+
+        Assert.False(Health!.Ok);
+        Assert.Equal("node: not found", Health!.Problem);
+        Assert.Equal(checkedAt, Health!.At);
+        Assert.Equal("dev", Assert.Single(Health!.Connecting!).Agent);
+    }
+
     public void Dispose() => _temp.Dispose();
 
     private sealed class FakeClient : IUpdateClient

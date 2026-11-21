@@ -70,8 +70,13 @@ public sealed record InstanceActivity(int Pid, bool Busy, IReadOnlyList<string> 
 public sealed record OpenTask(string TaskId, bool InTurn);
 
 /// <summary><c>&lt;project&gt;/.sidehub/run/health.json</c>, written by each daemon once its startup checks ran: the
-/// updater waits for it to decide whether the new version works.</summary>
-public sealed record InstanceHealth(int Pid, string Version, bool Ok, string? Problem, DateTime At);
+/// updater waits for it to decide whether the new version works. <c>Connecting</c>: its agents that have no connection
+/// to SideHub right now (absent when all are connected, and from an agent older than 1.0.153).</summary>
+public sealed record InstanceHealth(int Pid, string Version, bool Ok, string? Problem, DateTime At,
+    IReadOnlyList<AgentConnecting>? Connecting = null);
+
+/// <summary>An agent of a running daemon that has been trying to reach SideHub since <c>Since</c>.</summary>
+public sealed record AgentConnecting(string Agent, DateTime Since);
 
 /// <summary>Small JSON files shared by the daemons of a machine and the updater; written atomically (temp + rename).</summary>
 public static class UpdateFiles

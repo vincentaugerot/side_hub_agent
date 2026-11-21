@@ -146,6 +146,14 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     /// <summary>When the machine last woke up from a sleep the agent noticed, sent in agent.connected; null when never.</summary>
     private DateTime? _resumedFromSleepAt;
     private DateTime _connectedAt;
+    /// <summary>
+    /// How long one connection attempt may take. Without it, a TCP connection that opens while the TLS or HTTP handshake
+    /// is never answered (a proxy cut half way) keeps <c>ConnectAsync</c> waiting for ever: the process lives, the agent
+    /// stays offline until someone restarts it.
+    /// </summary>
+    public TimeSpan ConnectTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>Since when this agent has been trying to reach SideHub; null while connected.</summary>
+    private DateTime? _connectingSince;
     /// <summary>Connected at least once since the process started: later failures are outages, not a broken install.</summary>
     private bool _everConnected;
     private readonly DiagnosticReporter? _diagnostics;
@@ -1483,6 +1491,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         {
             // Cleared each attempt so a failed handshake (e.g. 401) never counts as a stable connection
             _connectedAt = default;
+            ReportConnection(connected: false);
 
             try
             {
@@ -1493,11 +1502,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 _ws.Options.CollectHttpResponseDetails = true;
 
                 Log($"Connecting to {MaskUrl(_config.SidehubUrl!)}...");
-                await _ws.ConnectAsync(new Uri(_config.SidehubUrl!), ct);
+                await ConnectAsync(_ws, ct);
                 Log("Connected");
 
                 _connectedAt = DateTime.UtcNow;
                 _everConnected = true;
+                ReportConnection(connected: true);
 
                 await SendConnectedMessageAsync(ct);
                 // The backend asks again for the PTYs still looked at in Conversation mode
@@ -1534,6 +1544,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 Log($"Error: {ex.Message}");
                 StopHeartbeat();
                 StopPtyReaper();
+                ReportConnection(connected: false);
 
                 // The handshake failed and the agent never got through since it started: likely a broken install
                 if (_connectedAt == default && !_everConnected && _diagnostics is not null)
@@ -1575,7 +1586,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     {
                         try
                         {
-                            await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+                            // Bounded like the connection attempt: a peer that is gone never answers the close
+                            using var closing = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                            await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", closing.Token);
                         }
                         catch
                         {
@@ -1587,6 +1600,36 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// One connection attempt, given up after <see cref="ConnectTimeout"/>: the caller then reconnects with its backoff.
+    /// Only the daemon's own stop request ends as a cancellation.
+    /// </summary>
+    private async Task ConnectAsync(ClientWebSocket ws, CancellationToken ct)
+    {
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        attempt.CancelAfter(ConnectTimeout);
+        try
+        {
+            // WaitAsync: the attempt ends at the timeout even where the handshake does not observe its cancellation
+            await ws.ConnectAsync(new Uri(_config.SidehubUrl!), attempt.Token).WaitAsync(attempt.Token);
+        }
+        catch (Exception) when (attempt.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Connection attempt timed out after {ConnectTimeout.TotalSeconds:0.#} s");
+        }
+    }
+
+    /// <summary>
+    /// Says in the health file since when this agent runs without its connection, for <c>status</c> and <c>doctor</c>:
+    /// from the outside, its process looks the same connected or not.
+    /// </summary>
+    private void ReportConnection(bool connected)
+    {
+        if (connected == (_connectingSince is null)) return;
+        _connectingSince = connected ? null : DateTime.UtcNow;
+        _updates?.ReportConnection(this, _displayName, _connectingSince);
     }
 
     /// <summary>Logs and reports what <see cref="StartupChecks"/> found wrong on this machine (once per process).</summary>

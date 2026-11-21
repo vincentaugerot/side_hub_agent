@@ -57,6 +57,10 @@ public sealed class UpdateCoordinator : IDisposable
     private readonly string _currentVersion;
     private readonly Func<DateTime> _utcNow;
     private readonly ConcurrentDictionary<IUpdateClient, byte> _clients = new();
+    // The agents of this process without a connection to SideHub, and the verdict of the startup checks once they ran
+    private readonly ConcurrentDictionary<IUpdateClient, AgentConnecting> _connecting = new();
+    private readonly object _healthLock = new();
+    private InstanceHealth? _health;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Timer? _timer;
     private string? _lastWaitingReport;
@@ -93,7 +97,24 @@ public sealed class UpdateCoordinator : IDisposable
 
     public void Attach(IUpdateClient client) => _clients[client] = 0;
 
-    public void Detach(IUpdateClient client) => _clients.TryRemove(client, out _);
+    public void Detach(IUpdateClient client)
+    {
+        _clients.TryRemove(client, out _);
+        _connecting.TryRemove(client, out _);
+    }
+
+    /// <summary>
+    /// An agent of this process lost its connection to SideHub (<paramref name="connectingSince"/>) or found it again
+    /// (null): kept in the health file, where <c>status</c> and <c>doctor</c> read it.
+    /// </summary>
+    public void ReportConnection(IUpdateClient client, string agent, DateTime? connectingSince)
+    {
+        if (connectingSince is { } since)
+            _connecting[client] = new AgentConnecting(agent, since);
+        else
+            _connecting.TryRemove(client, out _);
+        WriteHealth();
+    }
 
     public void Start(CancellationToken ct)
     {
@@ -446,14 +467,42 @@ public sealed class UpdateCoordinator : IDisposable
     {
         try
         {
-            var problems = await StartupChecks.RunOnceAsync(ct);
-            var helper = problems.FirstOrDefault(p => p.Reason == DiagnosticReasons.PtyHelperFailed);
-            UpdateFiles.Write(UpdateFiles.HealthPath(_projectDirectory),
-                new InstanceHealth(Environment.ProcessId, VersionInfo.AgentVersion, helper is null, helper?.Detail, DateTime.UtcNow));
+            ReportStartupChecks(await StartupChecks.RunOnceAsync(ct));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log($"Health file not written: {ex.Message}");
+        }
+    }
+
+    /// <summary>The startup checks ran: the health file can be written, and from now on follows the connections.</summary>
+    public void ReportStartupChecks(IReadOnlyList<StartupChecks.Problem> problems)
+    {
+        var helper = problems.FirstOrDefault(p => p.Reason == DiagnosticReasons.PtyHelperFailed);
+        lock (_healthLock)
+            _health = new InstanceHealth(Environment.ProcessId, VersionInfo.AgentVersion, helper is null, helper?.Detail, _utcNow());
+        WriteHealth();
+    }
+
+    /// <summary>
+    /// Nothing before the startup checks ran: the updater takes the file as their verdict. <c>At</c> stays the time of
+    /// that verdict, whatever the connections do later.
+    /// </summary>
+    private void WriteHealth()
+    {
+        lock (_healthLock)
+        {
+            if (_health is null) return;
+            var connecting = _connecting.Values.OrderBy(c => c.Since).ToList();
+            try
+            {
+                UpdateFiles.Write(UpdateFiles.HealthPath(_projectDirectory), _health with { Connecting = connecting.Count > 0 ? connecting : null });
+            }
+            // Whatever fails here: the connection loop reports through this, a file must not stop it
+            catch (Exception ex)
+            {
+                _log($"Health file not written: {ex.Message}");
+            }
         }
     }
 

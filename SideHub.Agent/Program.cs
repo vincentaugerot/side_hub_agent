@@ -151,10 +151,12 @@ static async Task<int> SetupAndStart(string[] args, string baseDirectory, string
     return await HandleDoctor(baseDirectory, ct);
 }
 
-/// <summary>The CLIs the agent runs, whether the agents come back after a reboot of the machine, then whether a Mac sleeps.</summary>
+/// <summary>The CLIs the agent runs, the agents that lost SideHub, whether they come back after a reboot of the machine,
+/// then whether a Mac sleeps.</summary>
 static async Task<int> HandleDoctor(string baseDirectory, CancellationToken ct)
 {
     var code = await CliReport.PrintAsync(ct);
+    ConnectionReport.Print(baseDirectory);
     AgentService.PrintRebootReport(baseDirectory);
     AgentService.PrintSleepReport();
     return code;

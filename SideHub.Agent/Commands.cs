@@ -370,6 +370,8 @@ public static class Commands
         if (manager.IsRunning())
         {
             Console.WriteLine($"[SideHub] Agent is running (PID: {pid})");
+            foreach (var line in ConnectionReport.Lines(baseDirectory, DateTime.UtcNow))
+                Console.WriteLine($"[SideHub] ! {line}");
             Console.WriteLine($"[SideHub] Logs: {manager.LogFile}");
 
             // Show log file size (current + archives)
@@ -569,6 +571,8 @@ public static class Commands
             var status = running ? $"running (PID: {pid})" : "stopped";
             Console.WriteLine($"  {instance.Directory}");
             Console.WriteLine($"    Status: {status}");
+            foreach (var line in ConnectionReport.Lines(instance.Directory, DateTime.UtcNow))
+                Console.WriteLine($"    ! {line}");
         }
 
         Console.WriteLine();
@@ -602,7 +606,8 @@ public static class Commands
         Console.WriteLine("  status          Show agent status");
         Console.WriteLine("    --all         Show all registered instances");
         Console.WriteLine("  doctor          Show the coding CLIs the agent runs, whether they are logged in and how they are paid for,");
-        Console.WriteLine("                  the agents that won't start again after a reboot, and whether a Mac goes to sleep");
+        Console.WriteLine("                  the agents running without their connection to SideHub, those that won't start again");
+        Console.WriteLine("                  after a reboot, and whether a Mac goes to sleep");
         Console.WriteLine("  version         Print the agent's version");
         Console.WriteLine("  help            Show this help");
         Console.WriteLine();

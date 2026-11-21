@@ -394,7 +394,8 @@ folder (`.sidehub-agent-install`) that it can write, as well as the folder above
 4. **Check, or roll back.** Each daemon writes `.sidehub/run/health.json` once its startup checks pass
    (pty-helper first). The update succeeds when all of them run the new version, healthy, and still run 20 s
    later; otherwise the previous release is put back (the failed one stays as `<install>.failed-<version>`)
-   and the daemons restart on it. The backend connection is not required: a SideHub outage never rolls back.
+   and the daemons restart on it. The backend connection is not required: a SideHub outage never rolls back
+   (the file also names the agents without a connection, which the updater does not read).
 
 The outcome is written to `~/.sidehub/update/state.json` and reported to SideHub by the first daemon that
 reconnects. The updater logs to `~/.sidehub/update/update.log`.
@@ -478,7 +479,8 @@ Commands:
   logs              Show agent logs (--no-follow to print and exit)
   status            Show agent status (--all: every instance)
   doctor            Show the coding CLIs the agent runs, whether they are logged in and how they are paid for,
-                    the agents that won't start again after a reboot, and whether a Mac goes to sleep
+                    the agents running without their connection to SideHub, those that won't start again
+                    after a reboot, and whether a Mac goes to sleep
   service install   Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)
   service uninstall / service status   (--all: one boot entry for every agent of the machine)
   version           Print the agent's version
@@ -589,7 +591,10 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 | `command.output` / `command.completed` / `command.failed` / `command.busy` | One-shot command results |
 
 The connection reconnects with exponential backoff (1 s → 30 s, reset after 60 s of stable connection)
-and drops after 3 missed heartbeat acknowledgements.
+and drops after 3 missed heartbeat acknowledgements. A connection attempt left unanswered is given up after
+30 s (`Connection attempt timed out after 30 s` in the logs) and tried again: a handshake a proxy never answers
+does not keep the agent offline. While an agent has no connection, its daemon says since when in
+`.sidehub/run/health.json` (`connecting`); past one minute, `sidehub-agent status` and `doctor` show it.
 
 ## Building from source
 
