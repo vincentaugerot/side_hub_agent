@@ -800,6 +800,29 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     }
 
     /// <summary>
+    /// A run's PTY exited: the CLI that said it could not authenticate with its login, if any (<see cref="CliLoginFailures"/>).
+    /// It is reported as not logged in before the run's <c>pty.exited</c>, so that the next launch avoids it: without
+    /// this, every following run would fail the same way until the agent restarts.
+    /// </summary>
+    private async Task<string?> ReportRunLoggedOutAsync(string ptySessionId, int exitCode, string? lastOutput, CancellationToken ct)
+    {
+        if (CliLoginFailures.Find(_usageCollector.RunProviders(ptySessionId), exitCode, lastOutput) is not { } cli)
+            return null;
+        // The line stays out of the log: it is whatever the CLI printed
+        Log($"CLI login lost in PTY {ptySessionId}: {cli} could not authenticate, reported as not logged in");
+        try
+        {
+            if (VersionInfo.NoteLoggedOut(cli))
+                await SendConnectedMessageAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log($"Login state not reported after PTY {ptySessionId}: {ex.Message}");
+        }
+        return cli;
+    }
+
+    /// <summary>
     /// The CLI's last answer, read from its transcript once its turn ended (the last lines may land just after the hook:
     /// read again once when none is found), secrets masked, sent as <c>pty.cli-message</c> unless already sent.
     /// </summary>
@@ -1719,12 +1742,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
     /// <summary>
     /// A terminal closed: a CLI that was not logged in may be now (the user ran <c>/login</c> or <c>codex login</c> in
-    /// it). Probed again only in that case, and reported when it changed.
+    /// it), and a run that failed may have lost its CLI's login on the way. Probed again in those two cases, and
+    /// reported when it changed. Only a terminal of the user makes a CLI that a run found logged out believed again.
     /// </summary>
-    private void RefreshCliAuthAfterTerminal(CancellationToken ct) =>
+    private void RefreshCliAuthAfterTerminal(bool afterFailedRun, bool userTerminal, CancellationToken ct) =>
         RunInBackground("CLI login probe", async () =>
         {
-            if (await VersionInfo.RefreshCliAuthAsync(ct))
+            if (await VersionInfo.RefreshCliAuthAsync(always: afterFailedRun, statusTrusted: userTerminal, ct))
                 await SendConnectedMessageAsync(ct);
         });
 
@@ -2666,20 +2690,25 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         CleanupNotifyFifo(ptySessionId);
                         // A run's last lines say why it failed (not logged in, command not found…); never logged here.
                         var lastOutput = isRun ? TerminalText.LastLines(executor.GetBufferedOutput()) : null;
-                        // Its plan ran out, and its CLI's last answer: the backend learns both before the exit (doc 60, 61)
+                        // Its CLI lost its login, its plan ran out, and its CLI's last answer: the backend learns them
+                        // before the exit (doc 60, 61)
+                        var loggedOutCli = isRun ? await ReportRunLoggedOutAsync(ptySessionId, exitCode, lastOutput, ct) : null;
                         if (isRun)
                             await ReportRunLimitAsync(ptySessionId, exitCode, lastOutput, ct);
                         if (answerSource is not null)
                             await ReportRunLastMessageAsync(ptySessionId, answerSource,
                                 SecretMasker.For(message.AdditionalEnv, message.SecretKeys), ct);
                         _cliLimits.TryRemove(ptySessionId, out _);
-                        var exited = new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput };
+                        var exited = new PtyExitedMessage
+                        {
+                            ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput, LoggedOutCli = loggedOutCli,
+                        };
                         if (isRun)
                             await SendRunEndAsync(exited, ct);
                         else
                             await SendAsync(exited, ct);
                         HarvestFinalUsage(ptySessionId, "exit");
-                        RefreshCliAuthAfterTerminal(ct);
+                        RefreshCliAuthAfterTerminal(afterFailedRun: isRun && exitCode != 0, userTerminal: !isRun, ct);
                     },
                     columns,
                     rows,

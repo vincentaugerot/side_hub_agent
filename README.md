@@ -581,7 +581,7 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 |---|---|
 | `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions, `installId`, `os`, `arch`, `selfUpdate`, `supervised`: starts again after a reboot, checked every 2 minutes, `resumedFromSleepAt`: last wake-up of the machine) and keep-alive every 15 s |
 | `agent.update-status` | Progress of an update: `downloading`, `waiting-idle` (with `busyReasons`), `applying`, `succeeded`, `rolled-back`, `failed`, `canceled` |
-| `pty.started` / `pty.exited` | Terminal spawned (with its real start time) / process ended (exit code) |
+| `pty.started` / `pty.exited` | Terminal spawned (with its real start time) / process ended (exit code; for a run, its last lines and, when its CLI could not authenticate with its login, `loggedOutCli`: that CLI is reported as not logged in at once, and the logins are checked again after any run that failed) |
 | `pty.output` / `pty.history` | Terminal output, live / replayed |
 | `pty.cli-session-started` / `pty.cli-session-titled` | Id and title of the CLI session running in a terminal |
 | `pty.cli-state` | `working` / `waiting-input` / `idle` |

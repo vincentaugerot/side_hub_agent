@@ -1,0 +1,7 @@
+# Claude Code, headless (`claude -p`), exit code 1. The first line is what three runs of an agent ended on in production
+# (2.1.317, 2026-11-19 and 20) and what 2.1.330 printed here on 2026-11-21 with an expired login in a throwaway home;
+# the second what it printed without any login. The others were read in the installed binary (2.1.330), not captured.
+Failed to authenticate: OAuth session expired and could not be refreshed
+Not logged in · Please run /login
+Failed to authenticate: this login reached its time limit and cannot be renewed. Run `claude auth login` to sign in again, or use `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN for unattended jobs
+Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.

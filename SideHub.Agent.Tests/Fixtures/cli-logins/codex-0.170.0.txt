@@ -1,0 +1,2 @@
+# codex-cli 0.170.0, `codex exec` without a login in a throwaway home (2026-11-21), exit code 1: its last line.
+ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5df6db5ba94b831-CDG, request id: req_1ae680ba6b0c486e8621c3597473dcb5

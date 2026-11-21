@@ -412,6 +412,14 @@ public class PtyExitedMessage
     /// </summary>
     [JsonPropertyName("lastOutput")]
     public string? LastOutput { get; init; }
+
+    /// <summary>
+    /// For a run that failed because its CLI could not authenticate with its login (<see cref="CliLoginFailures"/>):
+    /// that CLI ("claude", "codex"), so SideHub says what to do and tries elsewhere. Null otherwise. Ignored by older
+    /// backends.
+    /// </summary>
+    [JsonPropertyName("loggedOutCli")]
+    public string? LoggedOutCli { get; init; }
 }
 
 public class PtyHistoryMessage
