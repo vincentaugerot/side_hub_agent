@@ -10,6 +10,9 @@ public sealed class ConversationFeed
     /// <summary>Events kept for a snapshot: the terminal has the rest.</summary>
     public const int MaxEvents = 200;
 
+    /// <summary>Events kept when a past session is read whole (<see cref="ReadAll"/>): no terminal has the rest any more.</summary>
+    public const int MaxReplayEvents = 1000;
+
     /// <summary>Longest snapshot, in characters of text: the oldest events are left out past it.</summary>
     public const int MaxSnapshotChars = 1_000_000;
 
@@ -23,16 +26,21 @@ public sealed class ConversationFeed
     private readonly ClaudeSubagents? _subagents;
     /// <summary>The last progress of each sub-agent's call, kept on the call when the parser writes it again.</summary>
     private readonly Dictionary<string, ClaudeSubagents.Progress> _progress = new(StringComparer.Ordinal);
+    private readonly int _maxEvents;
+    /// <summary>Events dropped to stay within <see cref="_maxEvents"/>.</summary>
+    private int _dropped;
 
     /// <summary>Tools of claude that run a sub-agent.</summary>
     private static readonly HashSet<string> SubagentTools = new(StringComparer.Ordinal) { "Agent", "Task" };
 
     /// <param name="mask">Masks the PTY's secrets in a text (identity when it has none).</param>
     /// <param name="subagents">Follows the sub-agents of the session (claude), null for none.</param>
+    /// <param name="maxEvents">Events kept, the latest: <see cref="MaxEvents"/> for a session followed live.</param>
     public ConversationFeed(string provider, string cliSessionId, string path, IConversationParser parser, Func<string?, string?> mask,
-        ClaudeSubagents? subagents = null)
+        ClaudeSubagents? subagents = null, int maxEvents = MaxEvents)
     {
         _subagents = subagents;
+        _maxEvents = maxEvents;
         Provider = provider;
         CliSessionId = cliSessionId;
         Path = path;
@@ -79,8 +87,11 @@ public sealed class ConversationFeed
                 if (_events.Find(e => e.Id == callId) is { } call) Keep(call, changed);
             }
         }
-        if (_events.Count > MaxEvents)
-            _events.RemoveRange(0, _events.Count - MaxEvents);
+        if (_events.Count > _maxEvents)
+        {
+            _dropped += _events.Count - _maxEvents;
+            _events.RemoveRange(0, _events.Count - _maxEvents);
+        }
         return changed;
     }
 
@@ -101,6 +112,23 @@ public sealed class ConversationFeed
         else
             changed.Add(masked);
     }
+
+    /// <summary>
+    /// A session's whole transcript read once, for someone who looks at it after the fact (SideHub's Pilotage): its last
+    /// <see cref="MaxReplayEvents"/> events within <see cref="MaxSnapshotChars"/>, secrets masked, and whether older ones
+    /// were left out. Sub-agents are not followed: their calls are over, and their result is in the transcript.
+    /// </summary>
+    public static Replay ReadAll(string provider, string cliSessionId, string path, IConversationParser parser, Func<string?, string?> mask)
+    {
+        var feed = new ConversationFeed(provider, cliSessionId, path, parser, mask, maxEvents: MaxReplayEvents);
+        feed.Poll();
+        var events = feed.Snapshot();
+        return new Replay(events, feed._dropped > 0 || events.Count < feed._events.Count, feed.TakeUnrecognized());
+    }
+
+    /// <param name="Truncated">Older events were left out.</param>
+    /// <param name="Unrecognized">Types of lines the parser does not know, each once.</param>
+    public sealed record Replay(IReadOnlyList<ConversationEvent> Events, bool Truncated, IReadOnlyList<string> Unrecognized);
 
     /// <summary>Types met in the transcript that the parser does not know, each once.</summary>
     public IReadOnlyList<string> TakeUnrecognized() => _parser.TakeUnrecognized();

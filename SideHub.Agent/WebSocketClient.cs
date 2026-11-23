@@ -1956,6 +1956,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 case "test.script.request":
                     RunInBackground("test.script.request", () => HandleTestScriptRequestAsync(message, ct));
                     break;
+                case "cli-session.conversation.request":
+                    RunInBackground("cli-session.conversation.request", () => HandleCliSessionConversationRequestAsync(message, ct));
+                    break;
                 case "git.push.request":
                     RunInBackground("git.push.request", () => HandleGitPushRequestAsync(message, ct));
                     break;
@@ -3069,6 +3072,57 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var (branch, head) = text.Content is null ? (null, null) : await TestAppHost.ReadHeadAsync(_workingDirectory, ct);
         Log($"Test script {file}: " + (text.Error ?? $"{text.Content!.Length} chars sent"));
         await SendAsync(new TestScriptMessage { RequestId = message.RequestId, File = file, Content = text.Content, Branch = branch, Head = head, Error = text.Error }, ct);
+    }
+
+    /// <summary>
+    /// The conversation of a CLI session read whole, for its row in SideHub's Pilotage: a session over (or still going)
+    /// that nobody follows in Conversation mode. Found by its id wherever its CLI wrote it on this machine, read with the
+    /// parser of the Conversation mode; masked with the secrets of its PTY while it runs (a PTY that ended took them with
+    /// it). Its content is never logged.
+    /// </summary>
+    private async Task HandleCliSessionConversationRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || message.Provider is not { Length: > 0 } provider || message.CliSessionId is not { Length: > 0 } cliSessionId)
+        {
+            Log("cli-session.conversation.request ignored: requestId, provider and cliSessionId are required");
+            return;
+        }
+        CliSessionConversationMessage Failure(string error) => new() { RequestId = message.RequestId, Error = error };
+
+        if (!ConversationFeed.Supports(provider) || !_lastMessageReaders.TryGetValue(provider, out var reader)
+            || ConversationFeed.ParserFor(provider, _workingDirectory, ConversationImageDirectories()) is not { } parser)
+        {
+            await SendAsync(Failure("unsupported"), ct);
+            return;
+        }
+        if (!FifoNotification.IsValidCliSessionId(cliSessionId))
+        {
+            await SendAsync(Failure("not-found"), ct);
+            return;
+        }
+        var masker = message.PtySessionId is { } pty && _ptySecrets.TryGetValue(pty, out var secrets) ? SecretMasker.For(secrets.Env, secrets.Keys) : null;
+        CliSessionConversationMessage answer;
+        try
+        {
+            answer = await Task.Run(() =>
+            {
+                if (reader.SessionFiles(_workingDirectory, cliSessionId).FirstOrDefault() is not { } path || !File.Exists(path))
+                    return Failure("not-found");
+                var replay = ConversationFeed.ReadAll(provider, cliSessionId, path, parser,
+                    text => text is not null && masker is not null ? masker.Process(text) + masker.Flush() : text);
+                foreach (var type in replay.Unrecognized)
+                    Log($"Conversation line not recognized in CLI session {cliSessionId} (provider={provider} cli={VersionInfo.CachedCliVersions?.GetValueOrDefault(provider) ?? "?"} type={type})");
+                return new CliSessionConversationMessage { RequestId = message.RequestId, Events = replay.Events, Truncated = replay.Truncated };
+            }, ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            answer = Failure("failed");
+        }
+        Log(answer.Error is { } error
+            ? $"Conversation of CLI session {cliSessionId} not read: {error} (provider={provider})"
+            : $"Conversation of CLI session {cliSessionId} read: {answer.Events!.Count} events{(answer.Truncated ? ", older ones left out" : "")} (provider={provider})");
+        await SendAsync(answer, ct);
     }
 
     /// <summary>A run of tests going on in a PTY: its folder, when it started, and its secrets (masked in the titles of its images).</summary>

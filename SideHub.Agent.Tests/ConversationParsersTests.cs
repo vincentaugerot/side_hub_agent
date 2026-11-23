@@ -538,6 +538,50 @@ public class ConversationParsersTests
     }
 
     [Fact]
+    public void ReadAll_ReadsAPastSessionWhole_SecretsMasked()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"conversation-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            File.WriteAllLines(path, [ClaudeUser.Replace("Ajoute un filtre par statut", "Mon jeton est s3cr3t"), ClaudeBash, ClaudeBashResult]);
+
+            var replay = ConversationFeed.ReadAll("claude", "s", path, new ClaudeConversationParser(Cwd), t => t?.Replace("s3cr3t", "***"));
+
+            Assert.False(replay.Truncated);
+            var steps = Steps(replay.Events).ToList();
+            Assert.Equal(["u-1", "toolu_1"], steps.Select(e => e.Id));
+            Assert.Equal("Mon jeton est ***", steps[0].Text);
+            Assert.Equal(ToolStatuses.Done, steps[1].Status);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ReadAll_KeepsMoreThanALiveSnapshot_AndSaysWhenOlderEventsAreLeftOut()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"conversation-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            File.WriteAllLines(path, Enumerable.Range(0, ConversationFeed.MaxReplayEvents + 10).Select(i => ClaudeUser.Replace("u-1", $"u-{i}")));
+
+            var replay = ConversationFeed.ReadAll("claude", "s", path, new ClaudeConversationParser(Cwd), t => t);
+
+            Assert.True(replay.Truncated);
+            Assert.True(replay.Events.Count > ConversationFeed.MaxEvents);
+            Assert.True(replay.Events.Count <= ConversationFeed.MaxReplayEvents);
+            Assert.Contains(replay.Events, e => e.Id == $"u-{ConversationFeed.MaxReplayEvents + 9}");
+            Assert.DoesNotContain(replay.Events, e => e.Id == "u-0");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void Feed_FollowsTheSubagentOfARunningCall_FromItsTranscript()
     {
         var root = Path.Combine(Path.GetTempPath(), $"conversation-{Guid.NewGuid():N}");

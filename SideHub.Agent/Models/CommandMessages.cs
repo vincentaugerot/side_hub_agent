@@ -138,6 +138,13 @@ public class IncomingMessage
     [JsonPropertyName("ptySessionId")]
     public string? PtySessionId { get; init; }
 
+    /// <summary><c>cli-session.conversation.request</c>: the CLI session whose transcript to read, and its CLI.</summary>
+    [JsonPropertyName("cliSessionId")]
+    public string? CliSessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public string? Provider { get; init; }
+
     /// <summary>pty.start, review.round-start, review.diff.request: the work review (a GUID) the terminal's rounds belong
     /// to. On pty.start, the backend asks for the work done in this terminal to be reviewed.</summary>
     [JsonPropertyName("reviewId")]
@@ -325,6 +332,30 @@ public class PtyStartRefusedMessage
     /// lines of what failed, secrets of the PTY masked, 600 characters at most.</summary>
     [JsonPropertyName("detail"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Detail { get; init; }
+}
+
+/// <summary>
+/// Answer to <c>cli-session.conversation.request</c>: the conversation of a CLI session read whole in its transcript, for
+/// SideHub's Pilotage, or why not (<c>error</c>: <c>unsupported</c>, <c>not-found</c>, <c>failed</c>). Relayed to the
+/// person who asked, never kept by the backend.
+/// </summary>
+public class CliSessionConversationMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "cli-session.conversation";
+
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
+
+    [JsonPropertyName("events"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<SideHub.Agent.Conversation.ConversationEvent>? Events { get; init; }
+
+    /// <summary>Older events were left out (<see cref="SideHub.Agent.Conversation.ConversationFeed.MaxReplayEvents"/>).</summary>
+    [JsonPropertyName("truncated"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+
+    [JsonPropertyName("error"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; init; }
 }
 
 /// <summary>
