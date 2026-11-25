@@ -35,6 +35,12 @@ public static class WorkflowCommands
         return 0;
     }
 
+    /// <summary>The task types a workflow with a task input serves (feature, bug-fix, pr-review); none listed means every type.</summary>
+    internal static string DescribeTaskTypes(JsonElement workflow) =>
+        workflow.TryGetProperty("taskTypes", out var types) && types.ValueKind == JsonValueKind.Array && types.GetArrayLength() > 0
+            ? string.Join(", ", types.EnumerateArray().Select(t => t.GetString()))
+            : "every type";
+
     public static async Task<int> GetAsync(SideHubApiClient client, string[] args, bool json)
     {
         var id = args.FirstOrDefault(a => !a.StartsWith("--"));
@@ -69,8 +75,12 @@ public static class WorkflowCommands
                 var dflt = Prop(p, "default") is { } d ? $", default: {d}" : "";
                 var options = p.TryGetProperty("options", out var o) && o.ValueKind == JsonValueKind.Array
                     ? $", one of: {string.Join(" | ", o.EnumerateArray().Select(x => x.GetString()))}" : "";
-                Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}): {Prop(p, "label")}");
+                // A task input takes a task id: SideHub runs the workflow with the text composed from that task.
+                var taskValue = Prop(p, "type") == "task" ? ", value: a task id" : "";
+                Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}{taskValue}): {Prop(p, "label")}");
             }
+            if (parameters.EnumerateArray().Any(p => Prop(p, "type") == "task"))
+                Console.WriteLine($"Task types served: {DescribeTaskTypes(result)}");
         }
         foreach (var line in WorkflowRoles.DescribeWorkflowRoles(result, await WorkflowRoles.MemberEmailsAsync(client, result)))
             Console.WriteLine(line);
