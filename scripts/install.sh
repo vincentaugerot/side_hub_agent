@@ -2,7 +2,7 @@
 set -e
 
 # SideHub Agent Installer for macOS/Linux
-# Requires: Node.js (for PTY terminal support)
+# Requires: Node.js (for PTY terminal support), installed by the script when missing or too old (see install_nodejs)
 #
 # Usage: curl -fsSL https://api.sidehub.io/agent/install.sh | SIDEHUB_SETUP_TOKEN=<token> bash -s -- [version]
 #   SIDEHUB_SETUP_TOKEN (or --token <token>, visible in ps)  run from the project folder: after installing,
@@ -10,6 +10,8 @@ set -e
 #   --allow-root  configure and start it even as root (refused by default: the backend would control the machine)
 #   --user        install in ~/.local (no sudo); also the fallback when /usr/local isn't writable and sudo is missing
 #                 or refused (account not allowed to use it, wrong password, no terminal to ask it)
+#   --no-node     never install Node.js: stop with the instructions when it is missing or too old
+#                 (also SIDEHUB_INSTALL_NODE=0)
 #
 #   SIDEHUB_INSTALL_DIR  install folder (default /usr/local/lib/sidehub-agent, ~/.local/lib/sidehub-agent with --user);
 #   an existing folder is only replaced if it holds a previous agent install
@@ -37,8 +39,15 @@ SUDO=""
 # Written in every install folder: proves a folder is ours before it is wiped on reinstall
 INSTALL_MARKER=".sidehub-agent-install"
 PROJECT_DIR="$(pwd)"
+USER_PATH="$PATH"
 # pty-helper's node-pty needs it (the onboarding asks for it too)
 MIN_NODE_MAJOR=18
+# Installed when Node.js is missing or older than MIN_NODE_MAJOR: the latest release of this LTS line, official
+# archive from nodejs.org (the line the release CI builds pty-helper with), checked against its SHASUMS256.txt
+NODE_LTS_MAJOR=22
+NODE_DIST="https://nodejs.org/dist"
+# Set by detect_nodejs: the version found when it is too old, empty when Node.js is missing
+NODE_FOUND_VERSION=""
 
 # Release signing key (RSA, PKCS#1 v1.5 / SHA-256 over checksums.sha256), the private half is the
 # RELEASE_SIGNING_KEY secret of the release workflow. Keep in sync with install.ps1 (ReleaseSigningKeyTests).
@@ -109,24 +118,140 @@ version_gt() {
     return 1
 }
 
-# Check Node.js, and its version: pty-helper does not start on an older one
-check_nodejs() {
-    if ! command -v node &> /dev/null; then
-        echo "❌ Node.js is required but not installed."
-        echo "   Install Node.js ${MIN_NODE_MAJOR} or later from https://nodejs.org or via your package manager."
-        exit 1
-    fi
+# Check Node.js, and its version: pty-helper does not start on an older one.
+# Returns 0 when a recent enough one is on the PATH, 1 when it is missing, 2 when it is too old (NODE_FOUND_VERSION).
+detect_nodejs() {
+    NODE_FOUND_VERSION=""
+    command -v node &> /dev/null || return 1
     local version major
     version=$(node --version 2>/dev/null || true)
     major="${version#v}"
     major="${major%%.*}"
     if ! [[ "$major" =~ ^[0-9]+$ ]] || [ "$major" -lt "$MIN_NODE_MAJOR" ]; then
-        FAIL_DETAIL="node ${version:-unknown} found, ${MIN_NODE_MAJOR} or later required"
-        echo "❌ Node.js ${version:-(unknown version)} is too old: SideHub Agent needs Node.js ${MIN_NODE_MAJOR} or later."
-        echo "   Update it from https://nodejs.org, via your package manager or nvm (nvm install --lts)."
-        exit 1
+        NODE_FOUND_VERSION="${version:-(unknown version)}"
+        return 2
     fi
     echo "✓ Node.js $version found"
+}
+
+# Stop on a missing or too old Node.js that the script does not install (--no-node, or install_nodejs gave up).
+# $1: the detail reported to SideHub, by default what was found.
+nodejs_required() {
+    FAIL_REASON="install-node-missing"
+    if [ -z "$NODE_FOUND_VERSION" ]; then
+        FAIL_DETAIL="${1:-node not found in PATH}"
+        echo "❌ Node.js is required but not installed."
+        echo "   Install Node.js ${MIN_NODE_MAJOR} or later from https://nodejs.org or via your package manager."
+    else
+        FAIL_DETAIL="${1:-node $NODE_FOUND_VERSION found, ${MIN_NODE_MAJOR} or later required}"
+        echo "❌ Node.js $NODE_FOUND_VERSION is too old: SideHub Agent needs Node.js ${MIN_NODE_MAJOR} or later."
+        echo "   Update it from https://nodejs.org, via your package manager or nvm (nvm install --lts)."
+    fi
+    exit 1
+}
+
+# Install Node.js ${NODE_LTS_MAJOR} (latest release of the line) from nodejs.org, next to the agent:
+# <lib>/nodejs/node-v<version>-<platform> (/usr/local/lib/nodejs, ~/.local/lib/nodejs with --user), with node, npm
+# and npx linked into BIN_DIR. A fresh machine (a new VPS) has no Node.js, and the distribution's package can be too
+# old (Ubuntu 22.04 ships Node.js 12). Never replaces a node, npm or npx of BIN_DIR that it did not link itself.
+install_nodejs() {
+    local platform="$1"
+    local node_platform="${platform/#osx/darwin}"
+    local node_root
+    node_root="$(dirname "$INSTALL_DIR")/nodejs"
+
+    # The official archives are built against glibc: they don't run on Alpine (musl)
+    if [ -f /etc/alpine-release ] || { command -v ldd &> /dev/null && ldd --version 2>&1 | grep -qi musl; }; then
+        echo "ℹ️  This script can't install Node.js on a musl system (Alpine): apk add nodejs"
+        nodejs_required "node missing or too old, not installed on musl"
+    fi
+
+    local tool target
+    for tool in node npm npx; do
+        [ -e "$BIN_DIR/$tool" ] || [ -L "$BIN_DIR/$tool" ] || continue
+        target=$(readlink "$BIN_DIR/$tool" 2> /dev/null || true)
+        case "$target" in
+            "$node_root"/*) ;;
+            *)
+                echo "ℹ️  $BIN_DIR/$tool was not installed by this script: it is left as it is."
+                nodejs_required "node missing or too old, $BIN_DIR/$tool belongs to another install"
+                ;;
+        esac
+    done
+
+    if [ -z "$NODE_FOUND_VERSION" ]; then
+        echo "📦 Node.js is missing: installing Node.js ${NODE_LTS_MAJOR} (LTS) from nodejs.org..."
+    else
+        echo "📦 Node.js $NODE_FOUND_VERSION is too old: installing Node.js ${NODE_LTS_MAJOR} (LTS) from nodejs.org..."
+    fi
+
+    local base="${NODE_DIST}/latest-v${NODE_LTS_MAJOR}.x"
+    local sums="$TMP_DIR/node-SHASUMS256.txt"
+    if ! curl -fsSL "$base/SHASUMS256.txt" -o "$sums"; then
+        echo "❌ Unable to download $base/SHASUMS256.txt"
+        nodejs_required "Node.js ${NODE_LTS_MAJOR} download from nodejs.org failed"
+    fi
+    # "<hash>  node-v22.x.y-linux-arm64.tar.gz": the line of this platform's archive
+    local expected="" name=""
+    read -r expected name < <(awk -v suffix="-${node_platform}.tar.gz" \
+        'substr($2, length($2) - length(suffix) + 1) == suffix && $2 ~ /^node-v[0-9]+\.[0-9]+\.[0-9]+-/ { print tolower($1), $2; exit }' \
+        "$sums") || true
+    local version="${name#node-}"
+    version="${version%-"${node_platform}".tar.gz}"
+    if [ -z "$name" ] || ! [[ "$version" =~ ^v${NODE_LTS_MAJOR}\.[0-9]+\.[0-9]+$ ]] || ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "❌ No Node.js ${NODE_LTS_MAJOR} archive for ${node_platform} in $base/SHASUMS256.txt"
+        nodejs_required "no Node.js ${NODE_LTS_MAJOR} archive for ${node_platform} on nodejs.org"
+    fi
+
+    local archive="$TMP_DIR/$name"
+    if ! curl -fsSL "$base/$name" -o "$archive"; then
+        echo "❌ Unable to download $base/$name"
+        nodejs_required "Node.js $version download from nodejs.org failed"
+    fi
+    local actual=""
+    if ! actual=$(sha256_of "$archive") || [ "$actual" != "$expected" ]; then
+        echo "❌ Checksum mismatch for $name: expected $expected, got ${actual:-nothing (sha256sum or shasum missing)}"
+        nodejs_required "Node.js $version archive checksum invalid"
+    fi
+    echo "✓ SHA256 checksum verified ($name)"
+
+    local dir_name="node-${version}-${node_platform}"
+    local extract_dir="$TMP_DIR/node"
+    mkdir -p "$extract_dir"
+    if ! tar -xzf "$archive" -C "$extract_dir"; then
+        nodejs_required "Node.js $version extraction failed"
+    fi
+    # Before anything is copied: a system with too old libraries (glibc) can't run it
+    if ! "$extract_dir/$dir_name/bin/node" --version > /dev/null 2>&1; then
+        echo "❌ Node.js $version doesn't run on this machine (system libraries too old?)."
+        nodejs_required "Node.js $version doesn't run on this machine"
+    fi
+
+    stage install-permission-denied "couldn't write Node.js to $node_root or its links to $BIN_DIR"
+    $SUDO mkdir -p "$node_root" "$BIN_DIR"
+    $SUDO rm -rf "${node_root:?}/${dir_name:?}"
+    $SUDO cp -R "$extract_dir/$dir_name" "$node_root/"
+    for tool in node npm npx; do
+        $SUDO rm -f "${BIN_DIR:?}/${tool:?}"
+        $SUDO ln -s "$node_root/$dir_name/bin/$tool" "$BIN_DIR/$tool"
+    done
+    echo "✓ Node.js $version installed in $node_root/$dir_name (node, npm and npx linked in $BIN_DIR)"
+
+    # This shell, and the agent that setup starts from it, find it even when BIN_DIR is not on the PATH yet
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *) export PATH="$BIN_DIR:$PATH" ;;
+    esac
+    hash -r
+    local resolved
+    resolved=$(command -v node || true)
+    if [ "$resolved" != "$BIN_DIR/node" ]; then
+        FAIL_REASON="install-node-missing"
+        FAIL_DETAIL="Node.js $version installed in $BIN_DIR, but an older node comes first in PATH"
+        echo "❌ Node.js $version is installed, but $resolved comes first in your PATH and is too old."
+        echo "   Remove or update it (or put $BIN_DIR first in your PATH), then run the command again."
+        exit 1
+    fi
 }
 
 # Detect platform. Prints "<os>-<arch>"; errors go to stderr, since stdout is captured by the caller.
@@ -311,12 +436,14 @@ verify_checksum() {
 install() {
     local version="latest"
     local token="${SIDEHUB_SETUP_TOKEN:-}"
-    local allow_root="" user_install=""
+    local allow_root="" user_install="" install_node="yes"
     case "${SIDEHUB_ALLOW_ROOT:-}" in 1|true|TRUE|True) allow_root="--allow-root" ;; esac
+    case "${SIDEHUB_INSTALL_NODE:-}" in 0|false|FALSE|False|no) install_node="" ;; esac
     while [ $# -gt 0 ]; do
         case "$1" in
             --allow-root) allow_root="--allow-root"; shift ;;
             --user) user_install="user"; shift ;;
+            --no-node) install_node=""; shift ;;
             --token) token="$2"; shift 2 ;;
             --token=*) token="${1#--token=}"; shift ;;
             *) version="$1"; shift ;;
@@ -324,8 +451,12 @@ install() {
     done
     TOKEN="$token"
 
-    stage install-node-missing "node not found in PATH"
-    check_nodejs
+    # Checked first, installed once the install folders are known (below)
+    local node_status=0
+    detect_nodejs || node_status=$?
+    if [ "$node_status" -ne 0 ] && [ -z "$install_node" ]; then
+        nodejs_required
+    fi
 
     stage install-failed "unsupported platform: $(uname -s)-$(uname -m)"
     local platform
@@ -362,6 +493,13 @@ install() {
     stage install-failed "install folder exists and holds something else than an agent install"
     check_install_dir || exit 1
 
+    # Global (not local) so the EXIT trap still sees it once install() has returned
+    TMP_DIR=$(mktemp -d)
+
+    if [ "$node_status" -ne 0 ]; then
+        install_nodejs "$platform"
+    fi
+
     local asset_name="sidehub-agent-${platform}.tar.gz"
     local url="${SIDEHUB_API}/agent/download/${platform}/${tag}"
 
@@ -371,8 +509,6 @@ install() {
         echo "📦 Downloading SideHub Agent ${tag} (${platform})..."
     fi
 
-    # Global (not local) so the EXIT trap still sees it once install() has returned
-    TMP_DIR=$(mktemp -d)
     local archive_file="$TMP_DIR/agent.tar.gz"
     local extract_dir="$TMP_DIR/package"
 
@@ -419,7 +555,8 @@ install() {
     echo ""
     echo "✅ SideHub Agent ${tag} installed successfully!"
     echo ""
-    case ":$PATH:" in
+    # The PATH of the user's shell, not the one install_nodejs extended for this script
+    case ":$USER_PATH:" in
         *":$BIN_DIR:"*) ;;
         *)
             echo "⚠️  $BIN_DIR is not in your PATH: add it to use sidehub-agent from any folder, e.g."

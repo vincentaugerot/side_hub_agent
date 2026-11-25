@@ -253,8 +253,10 @@ the setup commands copied from SideHub set it.
 
 ## Installation
 
-Requires [Node.js](https://nodejs.org) 18 or later (for the PTY helper) and the CLIs you want to use
-(`claude`, `codex`, `agy`, `copilot`, `gemini`) on the `PATH`, signed in for the user running the agent.
+Requires [Node.js](https://nodejs.org) 18 or later (for the PTY helper), which `install.sh` installs
+when it is missing or too old (see [What the scripts check](#what-the-scripts-check)), and the CLIs you
+want to use (`claude`, `codex`, `agy`, `copilot`, `gemini`) on the `PATH`, signed in for the user running
+the agent.
 SideHub never asks for a model key: the agent runs the CLIs as they are configured, with your
 subscriptions (Claude, ChatGPT…) or your API keys. `sidehub-agent doctor` shows which ones it found.
 
@@ -300,7 +302,14 @@ variable from the session whether the install succeeded or not.
 
 Set `SIDEHUB_INSTALL_DIR` to install elsewhere (an existing folder that does not hold a previous agent
 install is refused), and `SIDEHUB_BIN_DIR` for the links (`install.sh`). Versions before `v1.0.59` can
-no longer be installed with the scripts. Node.js older than 18 is refused.
+no longer be installed with the scripts.
+
+Node.js older than 18 is refused by `install.ps1`. `install.sh` installs Node.js 22 (LTS) instead when
+it is missing or too old (a fresh VPS has none, Ubuntu 22.04's package is Node.js 12): the latest 22.x
+archive from nodejs.org, checked against its `SHASUMS256.txt`, extracted in `/usr/local/lib/nodejs/`
+(`~/.local/lib/nodejs/` with `--user`), with `node`, `npm` and `npx` linked next to `sidehub-agent`. It
+never replaces a `node`, `npm` or `npx` of that folder it did not link itself, and does not install it on
+Alpine (musl). `--no-node` (or `SIDEHUB_INSTALL_NODE=0`) stops with the instructions instead.
 
 The scripts verify the signature of the release's `checksums.sha256` (fetched from GitHub Releases)
 against the key embedded in the script, then the archive against it, and abort on any mismatch. The
