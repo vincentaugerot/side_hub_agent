@@ -225,7 +225,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _queueWorktree = new QueueWorktree(_fifoAgentKey, Log);
         // The queue's work is pushed from its worktree once there is one; before, from the agent's folder.
         _outgoing = new OutgoingCommitsReporter(
-            () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false), TrySendAsync, Log);
+            () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false), TrySendAsync, Log,
+            ct => _queueWorktree.FollowFolderUpstreamAsync(workingDirectory, ct));
         // And played from there by a local test execution, as it is: no fetch, no setup.
         _testApp = new TestAppHost(workingDirectory,
             () => _queueWorktree.Exists ? (_queueWorktree.Path, true) : (workingDirectory, false),

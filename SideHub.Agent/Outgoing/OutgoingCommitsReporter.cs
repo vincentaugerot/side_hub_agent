@@ -7,12 +7,15 @@ namespace SideHub.Agent.Outgoing;
 /// Keeps the backend told which commits of the agent's branch are not pushed (<c>git.outgoing</c>): at each connection,
 /// every <see cref="PollInterval"/> when it changed (commits made or pushed by hand), after a task is done and after a
 /// push. Pushes one at a time (<c>git.push.request</c>). The commits are read in <paramref name="place"/>'s folder: the
-/// queue's worktree once there is one (doc 71), else the agent's folder.
+/// queue's worktree once there is one (doc 71), else the agent's folder. <paramref name="beforeRead"/> runs before each
+/// read and each push: the queue's worktree puts its branch back on the folder's upstream there, so that "À pousser" and
+/// the push aim at it.
 /// </summary>
 public sealed class OutgoingCommitsReporter(
     Func<(string Directory, bool QueueWorktree)> place,
     Func<GitOutgoingMessage, CancellationToken, Task<bool>> send,
-    Action<string> log) : IDisposable
+    Action<string> log,
+    Func<CancellationToken, Task>? beforeRead = null) : IDisposable
 {
     public static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
 
@@ -60,6 +63,8 @@ public sealed class OutgoingCommitsReporter(
         await _refreshLock.WaitAsync(ct);
         try
         {
+            if (beforeRead is not null)
+                await beforeRead(ct);
             var (directory, queueWorktree) = place();
             var state = await OutgoingCommitsReader.ReadAsync(directory, ct);
             if (queueWorktree)
@@ -83,6 +88,8 @@ public sealed class OutgoingCommitsReporter(
         await _pushLock.WaitAsync(ct);
         try
         {
+            if (beforeRead is not null)
+                await beforeRead(ct);
             var result = await OutgoingCommitsReader.PushAsync(place().Directory, head, ct);
             log($"Push of {result.Branch ?? "HEAD"} to {result.Remote ?? "?"}: {result.Error ?? "pushed"}");
             try { await RefreshAsync(ct); }

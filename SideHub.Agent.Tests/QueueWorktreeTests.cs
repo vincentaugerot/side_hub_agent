@@ -145,6 +145,60 @@ public sealed class QueueWorktreeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_push_u_typed_in_the_worktree_does_not_keep_the_queue_off_the_folder_s_branch()
+    {
+        if (!GitAvailable)
+            return;
+        CloneWithRemote();
+        var log = new List<string>();
+        var worktree = NewWorktree(log);
+        await worktree.PrepareAsync(Work, CancellationToken.None);
+        Commit(worktree.Path, "task.txt", "task");
+        // What a CLI types when asked to push from the queue's terminal.
+        Git(worktree.Path, "push", "-q", "-u", "origin", "sidehub/queue-4a3a6adc");
+        Assert.Equal("origin/sidehub/queue-4a3a6adc", Git(worktree.Path, "rev-parse", "--abbrev-ref", "@{u}"));
+
+        await worktree.PrepareAsync(Work, CancellationToken.None);
+
+        Assert.Equal("origin/main", Git(worktree.Path, "rev-parse", "--abbrev-ref", "@{u}"));
+        Assert.Contains(log, line => line.Contains("followed origin/sidehub/queue-4a3a6adc, it follows origin/main again"));
+    }
+
+    [Fact]
+    public async Task The_push_after_a_push_u_lands_on_the_folder_s_branch_without_waiting_for_a_task()
+    {
+        if (!GitAvailable)
+            return;
+        CloneWithRemote();
+        var worktree = NewWorktree();
+        await worktree.PrepareAsync(Work, CancellationToken.None);
+        Commit(worktree.Path, "task.txt", "task");
+        Git(worktree.Path, "push", "-q", "-u", "origin", "sidehub/queue-4a3a6adc");
+        Commit(worktree.Path, "next.txt", "next task");
+        using var reporter = new Outgoing.OutgoingCommitsReporter(() => (worktree.Path, true), (_, _) => Task.FromResult(true),
+            _ => { }, ct => worktree.FollowFolderUpstreamAsync(Work, ct));
+
+        var push = await reporter.PushAsync("request-1", Git(worktree.Path, "rev-parse", "HEAD"), CancellationToken.None);
+
+        Assert.Null(push.Error);
+        Assert.Equal(Git(worktree.Path, "rev-parse", "HEAD"), Git(Remote, "rev-parse", "refs/heads/main"));
+    }
+
+    [Fact]
+    public async Task Without_a_worktree_the_folder_s_upstream_is_left_alone()
+    {
+        if (!GitAvailable)
+            return;
+        CloneWithRemote();
+        var worktree = NewWorktree();
+
+        await worktree.FollowFolderUpstreamAsync(Work, CancellationToken.None);
+
+        Assert.False(worktree.Exists);
+        Assert.Equal("origin/main", Git(Work, "rev-parse", "--abbrev-ref", "@{u}"));
+    }
+
+    [Fact]
     public async Task A_worktree_removed_by_hand_is_created_again_on_its_branch()
     {
         if (!GitAvailable)

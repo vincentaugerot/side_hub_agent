@@ -78,12 +78,12 @@ public sealed class QueueWorktree
             if (await GitRepository.OpenAsync(repositoryDirectory) is not { } repository)
                 return Fail("the agent's folder is not a git repository");
             var top = repository.TopLevel;
-            var folderBranch = await Git(top, LocalTimeout, ct, "symbolic-ref", "--quiet", "--short", "HEAD")
-                is { Succeeded: true } symbolic && symbolic.Output.Trim() is { Length: > 0 } name ? name : null;
-            var upstream = folderBranch is null ? null : await OutgoingCommitsReader.UpstreamAsync(top, folderBranch, ct);
+            var (folderBranch, upstream) = await FolderBranchAsync(top, ct);
 
             if (!Exists && await CreateAsync(top, folderBranch, upstream, ct) is { } failure)
                 return Fail(failure);
+            if (upstream is { } followed)
+                await FollowAsync(followed, ct);
 
             // Never rewrites: a diverged branch, or local changes in the way, leave it where it is.
             if (upstream is { } remote)
@@ -105,7 +105,7 @@ public sealed class QueueWorktree
             }
 
             await LinkClaudeLocalSettingsAsync(top, ct);
-            var baseName = upstream is { } followed ? $"{followed.Remote}/{followed.RemoteBranch}" : folderBranch;
+            var baseName = upstream is { } u ? $"{u.Remote}/{u.RemoteBranch}" : folderBranch;
             return new PreparedWorktree(Path, Branch, PendingSetup(top), behind, behind > 0 ? baseName : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -116,6 +116,54 @@ public sealed class QueueWorktree
         {
             _lock.Release();
         }
+    }
+
+    /// <summary>
+    /// Makes the branch follow the upstream of the folder's branch again when something made it follow another one, such
+    /// as a <c>git push -u origin sidehub/queue-…</c> typed in a terminal of the worktree: SideHub's push goes to the
+    /// branch's upstream, so the queue's work would land on a remote branch of its own instead of the folder's (usually
+    /// <c>main</c>). Called before each task and before the unpushed commits are read or pushed. Nothing when there is no
+    /// worktree yet or when the folder's branch follows nothing.
+    /// </summary>
+    public async Task FollowFolderUpstreamAsync(string repositoryDirectory, CancellationToken ct)
+    {
+        if (!Exists)
+            return;
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (await GitRepository.OpenAsync(repositoryDirectory) is not { } repository)
+                return;
+            if ((await FolderBranchAsync(repository.TopLevel, ct)).Upstream is { } upstream)
+                await FollowAsync(upstream, ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <summary>The branch checked out in the repository's folder and what it follows, each null when there is none.</summary>
+    private async Task<(string? Branch, (string Ref, string Remote, string RemoteBranch)? Upstream)> FolderBranchAsync(
+        string top, CancellationToken ct)
+    {
+        var branch = await Git(top, LocalTimeout, ct, "symbolic-ref", "--quiet", "--short", "HEAD")
+            is { Succeeded: true } symbolic && symbolic.Output.Trim() is { Length: > 0 } name ? name : null;
+        return (branch, branch is null ? null : await OutgoingCommitsReader.UpstreamAsync(top, branch, ct));
+    }
+
+    /// <summary>Sets the branch's upstream to <paramref name="upstream"/> unless it is already it.</summary>
+    private async Task FollowAsync((string Ref, string Remote, string RemoteBranch) upstream, CancellationToken ct)
+    {
+        var current = await OutgoingCommitsReader.UpstreamAsync(Path, Branch, ct);
+        if (current?.Ref == upstream.Ref)
+            return;
+        var name = $"{upstream.Remote}/{upstream.RemoteBranch}";
+        var tracked = await Git(Path, LocalTimeout, ct, "branch", $"--set-upstream-to={name}", Branch);
+        if (tracked is not { Succeeded: true })
+            _log($"Queue worktree {Path}: its branch does not follow {name} ({FirstLine(tracked?.Error) ?? "timed out"})");
+        else if (current is { } other)
+            _log($"Queue worktree {Path}: its branch followed {other.Remote}/{other.RemoteBranch}, it follows {name} again so that its push lands there");
     }
 
     /// <summary>Commits of <paramref name="target"/> not in the worktree's HEAD; 0 when git cannot tell.</summary>
@@ -161,12 +209,6 @@ public sealed class QueueWorktree
                 upstream?.Ref ?? folderBranch ?? "HEAD");
         if (add is not { Succeeded: true })
             return $"git worktree add failed ({FirstLine(add?.Error) ?? "timed out"})";
-        if (upstream is { } remote)
-        {
-            var tracked = await Git(Path, LocalTimeout, ct, "branch", $"--set-upstream-to={remote.Remote}/{remote.RemoteBranch}", Branch);
-            if (tracked is not { Succeeded: true })
-                _log($"Queue worktree {Path}: its branch does not follow {remote.Remote}/{remote.RemoteBranch} ({FirstLine(tracked?.Error) ?? "timed out"})");
-        }
         _log($"Queue worktree created at {Path} on {Branch}{(upstream is { } u ? $", following {u.Remote}/{u.RemoteBranch}" : "")}");
         return null;
     }
