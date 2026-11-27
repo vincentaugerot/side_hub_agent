@@ -250,7 +250,7 @@ any other reference appears as its caption, so write a caption that still makes 
 - `sidehub-cli repository list`: List the workspace repositories (id, name, default branch)
 - `sidehub-cli task comment [<taskId>] --text "..."`: Comment on the current task
 - `sidehub-cli task blocker [<taskId>] --reason "..."`: Report a blocker on the current task
-- `sidehub-cli task done [<taskId>] [--summary "..."]`: Mark the current task as finished (when you were asked to, at the very end of the task)
+- `sidehub-cli task done [<taskId>] [--summary "..."] [--open-point "..."]`: Mark the current task as finished (when you were asked to, at the very end of the task); `--open-point` tells what is left open for later
 
 ### Acting for the user
 
@@ -366,7 +366,8 @@ knowledge that will help you and other agents work more effectively.
 ## Other conventions
 
 - **Progress**: report your progress via `sidehub-cli task comment` at each key step
-- **Blocked**: if you are stuck, use `sidehub-cli task blocker` instead of spinning in loops
+- **Blocked**: if the task cannot move on without an answer, use `sidehub-cli task blocker` instead of spinning in loops. In a task queue a blocker pauses the whole queue: use it only when the task cannot move on or the next tasks depend on the answer
+- **Done with an open point**: when the work is done but for a point left for later (a value with no source you can find, a decision on what comes next, a push you are not allowed to do), commit what is done if you were asked to commit, then run `sidehub-cli task done --summary "..." --open-point "..."`: the task ends, its queue goes on and the person reads the point later
 - **Done**: run `sidehub-cli task done` only when your instructions ask for it, once the work is really finished
 - **Sub-tasks**: if you identify additional work, create tasks with `sidehub-cli task create`
 - Drive content in markdown

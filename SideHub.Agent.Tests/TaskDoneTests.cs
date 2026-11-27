@@ -24,7 +24,19 @@ public sealed class TaskDoneTests : IDisposable
     public void Task_id_falls_back_to_the_environment_and_the_summary_is_never_taken_for_it(
         string[] args, string? envTaskId, string? taskId, string? summary)
     {
-        Assert.Equal((taskId, summary), TaskCommands.ParseDone(args, envTaskId));
+        Assert.Equal((taskId, summary, (string?)null), TaskCommands.ParseDone(args, envTaskId));
+    }
+
+    [Theory]
+    [InlineData(new[] { "--summary", "Done", "--open-point", "Which price?" }, "env", "env", "Which price?")]
+    [InlineData(new[] { "--open-point", "t2", "t1" }, "env", "t1", "t2")]
+    [InlineData(new[] { "--open-point", "  " }, "env", "env", null)]
+    public void The_open_point_is_read_and_never_taken_for_the_task_id(
+        string[] args, string? envTaskId, string? taskId, string? openPoint)
+    {
+        var (id, _, point) = TaskCommands.ParseDone(args, envTaskId);
+        Assert.Equal(taskId, id);
+        Assert.Equal(openPoint, point);
     }
 
     [Fact]

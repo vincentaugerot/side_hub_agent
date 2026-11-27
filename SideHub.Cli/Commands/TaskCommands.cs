@@ -115,11 +115,11 @@ public static class TaskCommands
 
     public static async Task<int> DoneAsync(SideHubApiClient client, string[] args, string? envTaskId, bool json)
     {
-        var (taskId, summary) = ParseDone(args, envTaskId);
+        var (taskId, summary, openPoint) = ParseDone(args, envTaskId);
 
         if (string.IsNullOrEmpty(taskId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli task done [<taskId>] [--summary \"...\"]");
+            Console.Error.WriteLine("Usage: sidehub-cli task done [<taskId>] [--summary \"...\"] [--open-point \"...\"]");
             Console.Error.WriteLine("If taskId is omitted, SIDEHUB_TASK_ID is used.");
             return 1;
         }
@@ -134,7 +134,7 @@ public static class TaskCommands
         }
 
         var commitSha = await GitWorkTree.HeadAsync(directory);
-        var result = await client.CompleteTaskAsync(taskId, summary, commitSha);
+        var result = await client.CompleteTaskAsync(taskId, summary, commitSha, openPoint);
         // The agent hosting this terminal photographs what the task changed (work review). Best-effort.
         AgentNotifier.TaskDone();
 
@@ -146,24 +146,28 @@ public static class TaskCommands
             return 0;
         }
 
-        Console.WriteLine(commitSha is null ? $"Task done: {taskId}" : $"Task done: {taskId} (commit {commitSha[..Math.Min(7, commitSha.Length)]})");
+        Console.WriteLine((commitSha is null ? $"Task done: {taskId}" : $"Task done: {taskId} (commit {commitSha[..Math.Min(7, commitSha.Length)]})")
+            + (openPoint is null ? "" : ", with an open point"));
         return 0;
     }
 
-    /// <summary>The task (first positional argument, else <paramref name="envTaskId"/>) and the optional summary.
-    /// Option values are skipped, so a summary is never taken for the task id.</summary>
-    public static (string? TaskId, string? Summary) ParseDone(string[] args, string? envTaskId)
+    /// <summary>The task (first positional argument, else <paramref name="envTaskId"/>), the optional summary and the
+    /// optional open point (<c>--open-point</c>: done, but a question is left for later, the queue goes on). Option values
+    /// are skipped, so a summary or an open point is never taken for the task id.</summary>
+    public static (string? TaskId, string? Summary, string? OpenPoint) ParseDone(string[] args, string? envTaskId)
     {
         string? taskId = null;
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] == "--summary")
+            if (args[i] is "--summary" or "--open-point")
                 i++; // its value
             else if (!args[i].StartsWith("--"))
                 taskId ??= args[i];
         }
         var summary = GetOption(args, "--summary");
-        return (taskId ?? envTaskId, string.IsNullOrWhiteSpace(summary) ? null : summary);
+        var openPoint = GetOption(args, "--open-point");
+        return (taskId ?? envTaskId, string.IsNullOrWhiteSpace(summary) ? null : summary,
+            string.IsNullOrWhiteSpace(openPoint) ? null : openPoint.Trim());
     }
 
     /// <summary>Why <c>task done</c> must not complete the task yet, or null. Only when a commit is required and

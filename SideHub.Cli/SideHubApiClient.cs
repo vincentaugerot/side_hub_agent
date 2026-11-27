@@ -402,9 +402,9 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> CompleteTaskAsync(string taskId, string? summary, string? commitSha)
+    public async Task<JsonElement> CompleteTaskAsync(string taskId, string? summary, string? commitSha, string? openPoint = null)
     {
-        var body = new { summary, commitSha };
+        var body = new { summary, commitSha, openPoint };
         var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/tasks/{taskId}/done", body);
         await EnsureSuccessAsync(resp);
         var content = await resp.Content.ReadAsStringAsync();

@@ -102,7 +102,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  task status <taskId> --status <status>");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
     Console.Error.WriteLine("  task blocker [<taskId>] --reason \"...\"");
-    Console.Error.WriteLine("  task done [<taskId>] [--summary \"...\"]");
+    Console.Error.WriteLine("  task done [<taskId>] [--summary \"...\"] [--open-point \"...\"]");
     Console.Error.WriteLine("  task resolve-blocker <taskId>");
     Console.Error.WriteLine("  task drive-link-add <taskId> --item <driveItemId>");
     Console.Error.WriteLine("  task drive-link-remove <taskId> --item <driveItemId>");
